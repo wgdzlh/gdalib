@@ -41,8 +41,8 @@ func (g *GdalToolbox) CropRasters(tifWkt []ImgMergeFile, extWkt, out string) (er
 		gc         = []destroyable{trans}
 	)
 	defer func() {
-		for _, g := range gc {
-			g.Destroy()
+		for _, v := range gc {
+			v.Destroy()
 		}
 		os.Remove(tmpGeoJson)
 		for _, part := range parts {
