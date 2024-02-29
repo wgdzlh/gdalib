@@ -2,22 +2,6 @@ package gdalib
 
 import "encoding/json"
 
-type Destroyable interface {
-	Destroy()
-}
-
-type Speckle struct {
-	Uid       string `gorm:"-"`
-	Geom      string `gorm:"type:geometry;column:GEOM"`    // 图斑的矢量面
-	ClassName string `gorm:"type:varchar(60);column:YBBQ"` // 标签名
-	Pid       uint64 `gorm:"column:PID"`
-}
-
-type Uncertainty struct {
-	Fid  int
-	Geom string
-}
-
 type LabelCode = [2]string // [label,code]
 
 type AlignedLabel = map[string]LabelCode
@@ -26,9 +10,16 @@ type AnyJson = json.RawMessage
 
 type GdalGeo = []byte
 
-type InlayShpGeo struct {
-	Tif string
-	Geo GdalGeo
+// 图斑矢量
+type Speckle struct {
+	Geom      GdalGeo // 图斑的矢量面WKB
+	ClassName string  // 标签名
+}
+
+// 区域矢量
+type Uncertainty struct {
+	Id   int
+	Geom GdalGeo
 }
 
 type ImgMergeFile struct {

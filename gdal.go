@@ -2,13 +2,10 @@ package gdalib
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 
-	"github.com/google/uuid"
 	"github.com/wgdzlh/gdalib/log"
 	"github.com/wgdzlh/gdalib/utils"
 
@@ -23,10 +20,16 @@ type GdalToolbox struct {
 	logTag string
 }
 
+// 由GDAL库C语言创建的内存对象，需要手动调用Destroy回收
+type destroyable interface {
+	Destroy()
+}
+
 var (
 	emptyGeometry = gdal.Geometry{}
 )
 
+// 初始化GDAL工具箱，tmpDir为可选的临时目录路径（未提供的话为当前目录）
 func NewGdalToolbox(tmpDir ...string) *GdalToolbox {
 	g := &GdalToolbox{
 		refMap: map[int]gdal.SpatialReference{},
@@ -81,7 +84,7 @@ func (g *GdalToolbox) WriteShapefile(shp, labelField string, srid int, speckles 
 		geo      gdal.Geometry
 		cnt      int
 		e        error
-		gc       = make([]Destroyable, len(speckles))
+		gc       = make([]destroyable, len(speckles))
 	)
 	if labelField != "" {
 		labelIdx = def.FieldIndex(labelField)
@@ -134,7 +137,7 @@ func (g *GdalToolbox) WriteZoneShapefile(shp string, srid int, ucs ...Uncertaint
 		geo     gdal.Geometry
 		cnt     int
 		e       error
-		gc      = make([]Destroyable, len(ucs))
+		gc      = make([]destroyable, len(ucs))
 	)
 	for i, vec := range ucs {
 		feature = def.Create()
@@ -144,7 +147,7 @@ func (g *GdalToolbox) WriteZoneShapefile(shp string, srid int, ucs ...Uncertaint
 			log.Error(g.logTag+"err in set feature fid", zap.Error(e))
 			continue
 		}
-		feature.SetFieldInteger(0, vec.Fid)
+		feature.SetFieldInteger(0, vec.Id)
 		if geo, e = g.parseWKB(vec.Geom, ref); e != nil {
 			continue
 		}
@@ -183,7 +186,7 @@ func (g *GdalToolbox) WriteMergedShapefile(shp string, uc Uncertainty) (err erro
 	}
 	defer ds.Destroy() // 生成shp文件 + 释放资源
 	if err = ucGeo.TransformTo(tRef); err != nil {
-		log.Error(g.logTag+"transform geometry failed", zap.Error(err))
+		log.Error(g.logTag+"geo transform failed", zap.Error(err))
 		return
 	}
 	var polygons []gdal.Geometry
@@ -205,7 +208,7 @@ func (g *GdalToolbox) WriteMergedShapefile(shp string, uc Uncertainty) (err erro
 		feature gdal.Feature
 		cnt     int
 		e       error
-		gc      = make([]Destroyable, len(polygons))
+		gc      = make([]destroyable, len(polygons))
 	)
 	for i := range polygons {
 		feature = def.Create()
@@ -232,7 +235,7 @@ func (g *GdalToolbox) WriteMergedShapefile(shp string, uc Uncertainty) (err erro
 	return
 }
 
-// 解析shp文件
+// 从shp文件中解析出图斑矢量
 func (g *GdalToolbox) ParseShapefile(shp, labelField string) (ret []Speckle, err error) {
 	driver := gdal.OGRDriverByName(SHP_DRIVER_NAME)
 	ds, ok := driver.Open(shp, 0)
@@ -257,7 +260,7 @@ func (g *GdalToolbox) ParseShapefile(shp, labelField string) (ret []Speckle, err
 		geo     gdal.Geometry
 		wkb     []byte
 		e       error
-		gc      []Destroyable
+		gc      []destroyable
 	)
 	defer func() {
 		for _, g := range gc {
@@ -270,11 +273,11 @@ func (g *GdalToolbox) ParseShapefile(shp, labelField string) (ret []Speckle, err
 			geo = feature.Geometry()
 			wkb, e = geo.ToWKB()
 			if e != nil {
-				log.Error(g.logTag+"err in wkb trans", zap.String("geom", geo.ToGML()), zap.Error(e))
+				log.Error(g.logTag+"err in wkb convert", zap.String("geom", geo.ToGML()), zap.Error(e))
 				continue
 			}
 			sp := Speckle{
-				Geom: utils.B2S(wkb),
+				Geom: wkb,
 			}
 			if labelIdx >= 0 {
 				sp.ClassName = feature.FieldAsString(labelIdx)
@@ -306,7 +309,7 @@ func (g *GdalToolbox) GetLabelsFromShapefile(shp, labelField string) (ret []stri
 		feature  *gdal.Feature
 		label    string
 		cnt      int
-		gc       []Destroyable
+		gc       []destroyable
 	)
 	defer func() {
 		for _, g := range gc {
@@ -334,7 +337,7 @@ func (g *GdalToolbox) GetLabelsFromShapefile(shp, labelField string) (ret []stri
 	return
 }
 
-// 更新shp文件中的标签
+// 更新shp文件中的标签，可通过zone shp（两个shp坐标系要一致）指定更新/截取区域
 func (g *GdalToolbox) UpdateLabelInShapefile(shp, labelField, zone string, alignRet AlignedLabel) (err error) {
 	needUpdate := false
 	for key, pair := range alignRet {
@@ -349,7 +352,7 @@ func (g *GdalToolbox) UpdateLabelInShapefile(shp, labelField, zone string, align
 	log.Info(g.logTag+"update label with ref", zap.Any("alignRet", alignRet), zap.String("zoneShp", zone))
 	mz := emptyGeometry
 	if zone != "" {
-		if mz, err = g.getMergedZoneFromShp(zone); err != nil {
+		if mz, err = g.getMergedGeoFromShp(zone); err != nil {
 			return
 		}
 	}
@@ -370,7 +373,7 @@ func (g *GdalToolbox) UpdateLabelInShapefile(shp, labelField, zone string, align
 		feature *gdal.Feature
 		label   string
 		e       error
-		gc      []Destroyable
+		gc      []destroyable
 	)
 	defer func() {
 		for _, g := range gc {
@@ -392,6 +395,36 @@ func (g *GdalToolbox) UpdateLabelInShapefile(shp, labelField, zone string, align
 			if e = layer.SetFeature(*feature); e != nil {
 				log.Error(g.logTag+"err in set feature of layer", zap.Error(e))
 			}
+		} else {
+			return
+		}
+	}
+}
+
+func (g *GdalToolbox) getMergedGeoFromShp(shp string) (ret gdal.Geometry, err error) {
+	driver := gdal.OGRDriverByName(SHP_DRIVER_NAME)
+	ds, ok := driver.Open(shp, 0)
+	if !ok {
+		err = ErrGdalDriverOpen
+		return
+	}
+	defer ds.Destroy()
+	ret = gdal.Create(gdal.GT_Polygon)
+	var (
+		layer   = ds.LayerByIndex(0)
+		feature *gdal.Feature
+		gc      []destroyable
+	)
+	defer func() {
+		for _, g := range gc {
+			g.Destroy()
+		}
+	}()
+	for {
+		if feature = layer.NextFeature(); feature != nil {
+			gc = append(gc, *feature)
+			gc = append(gc, ret)
+			ret = ret.Union(feature.Geometry())
 		} else {
 			return
 		}
@@ -464,19 +497,43 @@ func (g *GdalToolbox) TransformShapefile(shp string, tSrid int) (out string, err
 	return
 }
 
+// 转换WKB坐标系
+func (g *GdalToolbox) TransformWkb(wkb GdalGeo, srid, tSrid int) (ret GdalGeo, err error) {
+	if tSrid == srid {
+		ret = wkb
+		return
+	}
+	ref, err := g.getSridRef(srid)
+	if err != nil {
+		return
+	}
+	tRef, err := g.getSridRef(tSrid)
+	if err != nil {
+		return
+	}
+	geo, err := g.parseWKB(wkb, ref)
+	if err != nil {
+		return
+	}
+	if err = geo.TransformTo(tRef); err != nil {
+		log.Error(g.logTag+"geo transform failed", zap.Error(err))
+		return
+	}
+	ret, err = geo.ToWKB()
+	return
+}
+
+// 从目标区域WKB中剪除多个其他区域WKB
 func (g *GdalToolbox) SubtractZones(uc *Uncertainty, subs []Uncertainty, srid int) (err error) {
 	ref, err := g.getSridRef(srid)
 	if err != nil {
 		return
 	}
-	ucGeo := gdal.CreateFromJson(uc.Geom)
-	defer ucGeo.Destroy()
-	if srid != GEOJSON_SRID {
-		if err = ucGeo.TransformTo(ref); err != nil {
-			log.Error(g.logTag+"transform geometry failed", zap.Error(err))
-			return
-		}
+	ucGeo, err := g.parseWKB(uc.Geom, ref)
+	if err != nil {
+		return
 	}
+	defer ucGeo.Destroy()
 	var (
 		geo gdal.Geometry
 		e   error
@@ -490,15 +547,12 @@ func (g *GdalToolbox) SubtractZones(uc *Uncertainty, subs []Uncertainty, srid in
 		ucGeo = ucGeo.Difference(geo)
 		defer ucGeo.Destroy()
 	}
-	wkb, err := ucGeo.ToWKB()
-	if err != nil {
-		return
-	}
-	uc.Geom = utils.B2S(wkb)
+	uc.Geom, err = ucGeo.ToWKB()
 	return
 }
 
-func (g *GdalToolbox) ShapefileToGeoJson(shp string, tSrid int) (ret AnyJson, err error) {
+// 从shp文件转化生成GeoJSON文件，可通过dstSrid指定目标srid
+func (g *GdalToolbox) ShapefileToGeoJSON(shp string, dstSrid ...int) (out string, err error) {
 	log.Info(g.logTag+"start geojson shp", zap.String("shp", shp))
 	sds, err := gdal.OpenEx(shp, gdal.OFVector, nil, nil, nil)
 	if err != nil {
@@ -507,55 +561,25 @@ func (g *GdalToolbox) ShapefileToGeoJson(shp string, tSrid int) (ret AnyJson, er
 	}
 	defer sds.Close()
 
+	tSrid := GEOJSON_SRID
+	if len(dstSrid) > 0 && dstSrid[0] > 0 {
+		tSrid = dstSrid[0]
+	}
 	prefix := strings.TrimSuffix(shp, FILE_EXT_SHP)
-	out := prefix + fmt.Sprintf("_%d"+FILE_EXT_JSON, tSrid)
+	out = prefix + fmt.Sprintf("_%d"+FILE_EXT_JSON, tSrid)
 	dds, err := gdal.VectorTranslate(out, []gdal.Dataset{sds}, []string{"-f", "GeoJSON", "-t_srs", fmt.Sprintf("epsg:%d", tSrid)})
 	if err != nil {
 		log.Error(g.logTag + "VectorTranslate failed")
 		return
 	}
 	dds.Close() // 生成转换后的json文件
-
-	ret, err = os.ReadFile(out)
-	log.Info(g.logTag+"end geojson shp", zap.String("shp", shp))
+	log.Info(g.logTag+"end geojson shp", zap.String("shp", shp), zap.String("out", out))
 	return
 }
 
-func (g *GdalToolbox) getMergedZoneFromShp(shp string) (ret gdal.Geometry, err error) {
-	driver := gdal.OGRDriverByName(SHP_DRIVER_NAME)
-	ds, ok := driver.Open(shp, 0)
-	if !ok {
-		err = ErrGdalDriverOpen
-		return
-	}
-	defer ds.Destroy()
-	ret = gdal.Create(gdal.GT_Polygon)
-	var (
-		layer   = ds.LayerByIndex(0)
-		feature *gdal.Feature
-		gc      []Destroyable
-	)
-	defer func() {
-		for _, g := range gc {
-			g.Destroy()
-		}
-	}()
-	for {
-		if feature = layer.NextFeature(); feature != nil {
-			gc = append(gc, *feature)
-			gc = append(gc, ret)
-			ret = ret.Union(feature.Geometry())
-		} else {
-			return
-		}
-	}
-}
-
-func (g *GdalToolbox) GetZoneJsonFromShp(shp string) (ret AnyJson, err error) {
-	// if shp, err = g.TransformShapefile(shp, GEOJSON_SRID); err != nil {
-	// 	return
-	// }
-	log.Info(g.logTag+"start zone json trans", zap.String("shp", shp))
+// 将shp转为标准GeoJSON（srid=4326）
+func (g *GdalToolbox) GetGeoJSONFromShp(shp string) (ret AnyJson, err error) {
+	log.Info(g.logTag+"start GeoJSON trans", zap.String("shp", shp))
 	driver := gdal.OGRDriverByName(SHP_DRIVER_NAME)
 	ds, ok := driver.Open(shp, 0)
 	if !ok {
@@ -584,7 +608,7 @@ func (g *GdalToolbox) GetZoneJsonFromShp(shp string) (ret AnyJson, err error) {
 		unionGeo = gdal.Create(gdal.GT_Polygon)
 		feature  *gdal.Feature
 		geo      gdal.Geometry
-		gc       = []Destroyable{unionGeo}
+		gc       = []destroyable{unionGeo}
 	)
 	defer func() {
 		for _, g := range gc {
@@ -607,12 +631,13 @@ func (g *GdalToolbox) GetZoneJsonFromShp(shp string) (ret AnyJson, err error) {
 		}
 	}
 	ret = utils.S2B(unionGeo.ToJSON())
-	log.Info(g.logTag+"got zone json from shp", zap.String("shp", shp), zap.Int("srid", srid))
+	log.Info(g.logTag+"got GeoJSON from shp", zap.String("shp", shp), zap.Int("srid", srid))
 	return
 }
 
+// 拆分、凸包+缓冲、合并目标区域WKB，输出GeoJSON
 func (g *GdalToolbox) ProcessZoneMerge(uc *Uncertainty, dis int) (ret AnyJson, err error) {
-	log.Info(g.logTag+"start process zone merge", zap.Int("ucSize", len(uc.Geom)), zap.Int("caseId", uc.Fid), zap.Int("dis", dis))
+	log.Info(g.logTag+"start process zone merge", zap.Int("ucSize", len(uc.Geom)), zap.Int("id", uc.Id), zap.Int("dis", dis))
 	ref, err := g.getSridRef(GEOJSON_SRID)
 	if err != nil {
 		return
@@ -633,12 +658,12 @@ func (g *GdalToolbox) ProcessZoneMerge(uc *Uncertainty, dis int) (ret AnyJson, e
 	ucGeo := g.splitAndHullBuff(unionGeo)
 	defer ucGeo.Destroy()
 	ret = utils.S2B(ucGeo.ToJSON())
-	log.Info(g.logTag+"output merge json", zap.Int("caseId", uc.Fid), zap.Int("dis", dis))
+	log.Info(g.logTag+"output merge json", zap.Int("id", uc.Id), zap.Int("dis", dis))
 	return
 }
 
 func (g *GdalToolbox) splitAndHullBuff(geo gdal.Geometry, dis ...float64) (rGeo gdal.Geometry) {
-	var gc []Destroyable
+	var gc []destroyable
 	if geo.Type() == gdal.GT_Polygon {
 		rGeo = geo.ConvexHull()
 		gc = append(gc, rGeo)
@@ -670,6 +695,7 @@ func (g *GdalToolbox) splitAndHullBuff(geo gdal.Geometry, dis ...float64) (rGeo 
 	return
 }
 
+// 获取srid对应的坐标系（可复用，故无需回收）
 func (g *GdalToolbox) getSridRef(srid int) (ref gdal.SpatialReference, err error) {
 	g.rLock.Lock()
 	defer g.rLock.Unlock()
@@ -683,8 +709,8 @@ func (g *GdalToolbox) getSridRef(srid int) (ref gdal.SpatialReference, err error
 		ref.Destroy()
 		return
 	}
-	// 这里应设置坐标系对应的数据轴次序为固定的经度/纬度（传统GIS坐标序），而不是与CRS相关的次序。否则在转换坐标系或者转GeoJSON时，可能出现次序倒置问题
-	// 目前公司前后端所有空间坐标数据都为固定的经度/纬度次序
+	// 这里应设置坐标系对应的数据轴次序为固定的(经度,纬度)（传统GIS坐标序），而不是新标准中与CRS相关的次序。否则在转换坐标系或者转GeoJSON时，可能出现次序倒置问题
+	// 目前我们处理的空间坐标数据都为固定的(经度,纬度)次序
 	ref.SetAxisMappingStrategy(gdal.OAMS_TraditionalGisOrder)
 	// OAMS_TRADITIONAL_GIS_ORDER means that for geographic CRS with lat/long order, the data will still be long/lat ordered. Similarly for a projected CRS with northing/easting order, the data will still be easting/northing ordered.
 	// OAMS_AUTHORITY_COMPLIANT means that the data axis will be identical to the CRS axis. This is the default value when instantiating OGRSpatialReference.
@@ -693,6 +719,7 @@ func (g *GdalToolbox) getSridRef(srid int) (ref gdal.SpatialReference, err error
 	return
 }
 
+// 获取shp的srid
 func (g *GdalToolbox) GetSridOfShapefile(shp string) (srid int, err error) {
 	driver := gdal.OGRDriverByName(SHP_DRIVER_NAME)
 	ds, ok := driver.Open(shp, 0)
@@ -723,22 +750,20 @@ func (g *GdalToolbox) getSrid(sp gdal.SpatialReference) (srid int, err error) {
 	return
 }
 
-func (g *GdalToolbox) GeoJSONToWKB(geoJson AnyJson) (ret string, err error) {
+// 将GeoJSON转为WKB
+func (g *GdalToolbox) GeoJSONToWKB(geoJson AnyJson) (ret GdalGeo, err error) {
 	geo := gdal.CreateFromJson(utils.B2S(geoJson))
 	defer geo.Destroy()
 	if geo.WKBSize() == 0 {
 		err = ErrGdalWrongGeoJSON
 		return
 	}
-	wkb, err := geo.ToWKB()
-	if err != nil {
-		return
-	}
-	ret = utils.B2S(wkb)
+	ret, err = geo.ToWKB()
 	return
 }
 
-func (g *GdalToolbox) GetAreaCoverage(districtGeom string, imagesGeom []string) (ratios []float32, dst AnyJson, unions, diffs []AnyJson, err error) {
+// 获取多个影像范围WKB分别在目标区域中的覆盖率及目标区域、影像范围、未覆盖区域的GeoJSON
+func (g *GdalToolbox) GetAreaCoverage(districtGeom GdalGeo, imagesGeom []GdalGeo) (ratios []float32, dst AnyJson, unions, diffs []AnyJson, err error) {
 	log.Info(g.logTag + "start get area coverage")
 	ref, err := g.getSridRef(UNIVERSAL_SRID)
 	if err != nil {
@@ -762,7 +787,7 @@ func (g *GdalToolbox) GetAreaCoverage(districtGeom string, imagesGeom []string) 
 		ratio        float32
 		interArea    float64
 		districtArea = district.Area()
-		gc           = []Destroyable{district}
+		gc           = []destroyable{district}
 	)
 	defer func() {
 		for _, g := range gc {
@@ -797,6 +822,7 @@ func (g *GdalToolbox) GetAreaCoverage(districtGeom string, imagesGeom []string) 
 	return
 }
 
+// 获取多个影像的集合在目标区域中的覆盖率
 func (g *GdalToolbox) GetAreaCoverageRatio(districtWkt string, imagesWkt []string) (ratio float32, err error) {
 	log.Info(g.logTag + "start get coverage ratio")
 	ref, err := g.getSridRef(UNIVERSAL_SRID)
@@ -805,13 +831,13 @@ func (g *GdalToolbox) GetAreaCoverageRatio(districtWkt string, imagesWkt []strin
 	}
 	district, err := gdal.CreateFromWKT(districtWkt, ref)
 	if err != nil {
-		log.Error(g.logTag+"pares district wkt failed", zap.Error(err))
+		log.Error(g.logTag+"parse district wkt failed", zap.Error(err))
 		return
 	}
 	var (
 		unionGeo = gdal.Create(gdal.GT_Polygon)
 		subGeo   gdal.Geometry
-		gc       = []Destroyable{district, unionGeo}
+		gc       = []destroyable{district, unionGeo}
 	)
 	defer func() {
 		for _, g := range gc {
@@ -836,28 +862,25 @@ func (g *GdalToolbox) GetAreaCoverageRatio(districtWkt string, imagesWkt []strin
 	return
 }
 
-func (g *GdalToolbox) parseAlgWKT(wkt string) (ret gdal.Geometry, err error) {
-	ref, err := g.getSridRef(WKT_ALG_SRID)
+func (g *GdalToolbox) parseWKB(wkb GdalGeo, ref gdal.SpatialReference) (ret gdal.Geometry, err error) {
+	ret, err = gdal.CreateFromWKB(wkb, ref, len(wkb))
 	if err != nil {
-		return
+		log.Error(g.logTag+"parse wkb failed", zap.Error(err))
 	}
+	return
+}
+
+func (g *GdalToolbox) parseWKT(wkt string, ref gdal.SpatialReference) (ret gdal.Geometry, err error) {
 	ret, err = gdal.CreateFromWKT(wkt, ref)
 	if err != nil {
-		log.Error(g.logTag+"pares wkt failed", zap.Error(err))
+		log.Error(g.logTag+"parse wkt failed", zap.Error(err))
 	}
 	return
 }
 
-func (g *GdalToolbox) parseWKB(geom string, ref gdal.SpatialReference) (ret gdal.Geometry, err error) {
-	ret, err = gdal.CreateFromWKB(utils.S2B(geom), ref, len(geom))
-	if err != nil {
-		log.Error(g.logTag+"err in wkb parsing", zap.String("geom", utils.BsToHex(geom)), zap.Error(err))
-	}
-	return
-}
-
-func (g *GdalToolbox) CheckWkt(wkt string) (err error) {
-	ref, err := g.getSridRef(UNIVERSAL_SRID)
+// 检查WKT有效性
+func (g *GdalToolbox) CheckWkt(wkt string, srid int) (err error) {
+	ref, err := g.getSridRef(srid)
 	if err != nil {
 		return
 	}
@@ -870,6 +893,35 @@ func (g *GdalToolbox) CheckWkt(wkt string) (err error) {
 	return
 }
 
+// WKT转WKB
+func (g *GdalToolbox) WktToWkb(wkt string, srid int) (wkb GdalGeo, err error) {
+	ref, err := g.getSridRef(srid)
+	if err != nil {
+		return
+	}
+	geo, err := g.parseWKT(wkt, ref)
+	if err != nil {
+		return
+	}
+	wkb, err = geo.ToWKB()
+	return
+}
+
+// WKB转WKT
+func (g *GdalToolbox) WkbToWkt(wkb GdalGeo, srid int) (wkt string, err error) {
+	ref, err := g.getSridRef(srid)
+	if err != nil {
+		return
+	}
+	geo, err := g.parseWKB(wkb, ref)
+	if err != nil {
+		return
+	}
+	wkt, err = geo.ToWKT()
+	return
+}
+
+// 将shp转为WKT
 func (g *GdalToolbox) GetWktFromShp(shp string) (ret string, err error) {
 	log.Info(g.logTag+"start shp wkt trans", zap.String("shp", shp))
 	driver := gdal.OGRDriverByName(SHP_DRIVER_NAME)
@@ -892,7 +944,7 @@ func (g *GdalToolbox) GetWktFromShp(shp string) (ret string, err error) {
 		unionGeo = gdal.Create(gdal.GT_Polygon)
 		feature  *gdal.Feature
 		geo      gdal.Geometry
-		gc       = []Destroyable{unionGeo}
+		gc       = []destroyable{unionGeo}
 	)
 	defer func() {
 		for _, g := range gc {
@@ -930,13 +982,13 @@ func (g *GdalToolbox) GetWktFromShp(shp string) (ret string, err error) {
 	return
 }
 
-// 将选定矢量写入shp
-func (g *GdalToolbox) WriteGeoToShapefile(shp string, gs ...GdalGeo) (err error) {
-	ref, err := g.getSridRef(UNIVERSAL_SRID)
+// 将选定矢量WKB写入shp
+func (g *GdalToolbox) WriteGeoToShapefile(shp string, srid int, gs ...GdalGeo) (err error) {
+	ref, err := g.getSridRef(srid)
 	if err != nil {
 		return
 	}
-	ds, _, layer, err := g.getShpDriver(shp, UNIVERSAL_SRID)
+	ds, _, layer, err := g.getShpDriver(shp, srid)
 	if err != nil {
 		return
 	}
@@ -947,7 +999,7 @@ func (g *GdalToolbox) WriteGeoToShapefile(shp string, gs ...GdalGeo) (err error)
 		geo     gdal.Geometry
 		valid   int
 		e       error
-		gc      = make([]Destroyable, len(gs))
+		gc      = make([]destroyable, len(gs))
 	)
 	for i, vec := range gs {
 		feature = def.Create()
@@ -977,128 +1029,5 @@ func (g *GdalToolbox) WriteGeoToShapefile(shp string, gs ...GdalGeo) (err error)
 		g.Destroy()
 	}
 	log.Info(g.logTag+"output geo to shapefile done", zap.String("shp", shp), zap.Int("total", len(gs)), zap.Int("valid", valid))
-	return
-}
-
-func (g *GdalToolbox) CropRasters(tifWkt []ImgMergeFile, extWkt, out string) (err error) {
-	n_tif := len(tifWkt)
-	if n_tif == 0 {
-		return
-	}
-	ref, err := g.getSridRef(UNIVERSAL_SRID)
-	if err != nil {
-		return
-	}
-	tRef, err := g.getSridRef(OUTPUT_SRID)
-	if err != nil {
-		return
-	}
-	var (
-		ext        gdal.Geometry
-		geo        gdal.Geometry
-		sds        gdal.Dataset
-		ods        gdal.Dataset
-		dss        []gdal.Dataset
-		part       string
-		parts      []string
-		opts       []string
-		trans      = gdal.CreateCoordinateTransform(ref, tRef)
-		tmpGeoJson = filepath.Join(g.tmpDir, fmt.Sprintf(TMP_GEOJSON, uuid.NewString()))
-		tmpVrt     = out + "_tmp.vrt"
-		gc         = []Destroyable{trans}
-	)
-	defer func() {
-		for _, g := range gc {
-			g.Destroy()
-		}
-		os.Remove(tmpGeoJson)
-		for _, part := range parts {
-			os.Remove(part)
-		}
-	}()
-	isUniform := true
-	for i, t := range tifWkt[1:] {
-		if t.BandOrder != tifWkt[i].BandOrder {
-			isUniform = false
-			break
-		}
-	}
-	log.Info(g.logTag+"crop and merge rasters", zap.Int("tif_cnt", n_tif), zap.Bool("uniform", isUniform), zap.String("out", out))
-	if extWkt != "" {
-		if ext, err = gdal.CreateFromWKT(extWkt, ref); err != nil {
-			return
-		}
-		gc = append(gc, ext)
-		if err = ext.Transform(trans); err != nil {
-			return
-		}
-	}
-	hasExt := ext != emptyGeometry && !ext.IsEmpty()
-	for i := n_tif - 1; i >= 0; i-- {
-		t := tifWkt[i]
-		if geo, err = gdal.CreateFromWKT(t.Wkt, ref); err != nil {
-			return
-		}
-		gc = append(gc, geo)
-		if err = geo.Transform(trans); err != nil {
-			return
-		}
-		if hasExt {
-			geo = geo.Intersection(ext)
-			gc = append(gc, geo)
-			ext = ext.Difference(geo)
-			gc = append(gc, ext)
-		}
-		gt := geo.Type()
-		if (gt != gdal.GT_MultiPolygon && gt != gdal.GT_Polygon) || geo.GeometryCount() == 0 {
-			log.Info(g.logTag+"encounter empty cut line geo", zap.Int("idx", i), zap.String("img", t.Infile))
-			continue
-		}
-		if err = os.WriteFile(tmpGeoJson, utils.S2B(geo.ToJSON()), os.ModePerm); err != nil {
-			return
-		}
-		sds, err = gdal.Open(t.Infile, gdal.ReadOnly)
-		if err != nil {
-			return
-		}
-		part = out + fmt.Sprintf("_%d_part.tif", i)
-		opts = []string{"-cutline", tmpGeoJson, "-crop_to_cutline", "-overwrite", "-t_srs", fmt.Sprintf("epsg:%d", OUTPUT_SRID)}
-		if !isUniform && t.BandOrder != "R,G,B" { // 若通道顺序不统一，则全部输出RGB格式影像
-			if bands, invalid := utils.GetBasicBandIdx(t.BandOrder); invalid {
-				log.Error(g.logTag+"invalid band order to merge", zap.String("img", t.Infile), zap.String("bands", t.BandOrder))
-				continue
-			} else {
-				opts = append(opts, []string{"-b", bands[0], "-b", bands[1], "-b", bands[2]}...)
-			}
-		}
-		ods, err = gdal.Warp(part, nil, []gdal.Dataset{sds}, opts) // 剪切影像
-		sds.Close()
-		if err != nil {
-			log.Error(g.logTag+"failed to crop raster", zap.Error(err))
-			return
-		}
-		defer ods.Close()
-		parts = append([]string{part}, parts...)
-		dss = append([]gdal.Dataset{ods}, dss...)
-	}
-	if len(dss) == 0 {
-		err = ErrEmptyTif
-		return
-	} else if len(dss) > 1 {
-		defer os.Remove(tmpVrt)
-		// 将各景影像剪切结果拼接成一个VRT
-		if ods, err = gdal.BuildVRT(tmpVrt, dss, parts, []string{"-resolution", "highest", "-overwrite"}); err != nil {
-			log.Error(g.logTag+"failed to build vrt", zap.Error(err))
-			return
-		}
-		defer ods.Close()
-	}
-	// 将VRT转为最终GTiff
-	finalDs, err := gdal.Translate(out, ods, []string{"-co", "compress=lzw"})
-	if err != nil {
-		log.Error(g.logTag+"failed to translate vrt", zap.Error(err))
-		return
-	}
-	finalDs.Close()
 	return
 }

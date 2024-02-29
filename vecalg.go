@@ -16,6 +16,18 @@ const (
 	BuffQuadSegs    = 12
 )
 
+func (g *GdalToolbox) parseAlgWKT(wkt string) (ret gdal.Geometry, err error) {
+	ref, err := g.getSridRef(WKT_ALG_SRID)
+	if err != nil {
+		return
+	}
+	ret, err = gdal.CreateFromWKT(wkt, ref)
+	if err != nil {
+		log.Error(g.logTag+"parse alg wkt failed", zap.Error(err))
+	}
+	return
+}
+
 func (g *GdalToolbox) simpGeo(geo gdal.Geometry, t float64) (wkt string, err error) {
 	defer geo.Destroy()
 	// t := config.C.Server.GeoSimplifyT
