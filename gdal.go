@@ -211,7 +211,7 @@ func (g *GdalToolbox) WkbToGeoJSON(wkb GdalGeo, srid int) (ret AnyJson, err erro
 	return
 }
 
-// 合并WKB
+// 合并多个WKB矢量面
 func (g *GdalToolbox) Union(gs []GdalGeo, srid int) (ret GdalGeo, err error) {
 	ref, err := g.getSridRef(srid)
 	if err != nil {
@@ -220,7 +220,7 @@ func (g *GdalToolbox) Union(gs []GdalGeo, srid int) (ret GdalGeo, err error) {
 	var (
 		geo      gdal.Geometry
 		unionGeo = gdal.Create(gdal.GT_Polygon)
-		gc       []destroyable
+		gc       = []destroyable{unionGeo}
 	)
 	defer func() {
 		for _, v := range gc {
@@ -228,19 +228,18 @@ func (g *GdalToolbox) Union(gs []GdalGeo, srid int) (ret GdalGeo, err error) {
 		}
 	}()
 	for _, a := range gs {
-		geo, err = g.parseWKB(a, ref)
-		if err != nil {
+		if geo, err = g.parseWKB(a, ref); err != nil {
 			return
 		}
-		gc = append(gc, unionGeo)
+		gc = append(gc, geo)
 		unionGeo = unionGeo.Union(geo)
+		gc = append(gc, unionGeo)
 	}
 	ret, err = unionGeo.ToWKB()
-	gc = append(gc, unionGeo)
 	return
 }
 
-// 获取WKB公共区
+// 获取多个WKB矢量面公共区
 func (g *GdalToolbox) Intersection(gs []GdalGeo, srid int) (ret GdalGeo, err error) {
 	ref, err := g.getSridRef(srid)
 	if err != nil {
@@ -249,7 +248,7 @@ func (g *GdalToolbox) Intersection(gs []GdalGeo, srid int) (ret GdalGeo, err err
 	var (
 		geo      gdal.Geometry
 		interGeo = gdal.Create(gdal.GT_Polygon)
-		gc       []destroyable
+		gc       = []destroyable{interGeo}
 	)
 	defer func() {
 		for _, v := range gc {
@@ -257,15 +256,36 @@ func (g *GdalToolbox) Intersection(gs []GdalGeo, srid int) (ret GdalGeo, err err
 		}
 	}()
 	for _, a := range gs {
-		geo, err = g.parseWKB(a, ref)
-		if err != nil {
+		if geo, err = g.parseWKB(a, ref); err != nil {
 			return
 		}
-		gc = append(gc, interGeo)
+		gc = append(gc, geo)
 		interGeo = interGeo.Intersection(geo)
+		gc = append(gc, interGeo)
 	}
 	ret, err = interGeo.ToWKB()
-	gc = append(gc, interGeo)
+	return
+}
+
+// 求两个WKB矢量面之差
+func (g *GdalToolbox) Difference(gA, gB GdalGeo, srid int) (ret GdalGeo, err error) {
+	ref, err := g.getSridRef(srid)
+	if err != nil {
+		return
+	}
+	geoA, err := g.parseWKB(gA, ref)
+	if err != nil {
+		return
+	}
+	defer geoA.Destroy()
+	geoB, err := g.parseWKB(gB, ref)
+	if err != nil {
+		return
+	}
+	defer geoB.Destroy()
+	diffGeo := geoA.Difference(geoB)
+	ret, err = diffGeo.ToWKB()
+	diffGeo.Destroy()
 	return
 }
 
@@ -279,19 +299,23 @@ func (g *GdalToolbox) SubtractZones(uc *Uncertainty, subs []Uncertainty, srid in
 	if err != nil {
 		return
 	}
-	defer ucGeo.Destroy()
 	var (
 		geo gdal.Geometry
 		e   error
+		gc  = []destroyable{ucGeo}
 	)
+	defer func() {
+		for _, v := range gc {
+			v.Destroy()
+		}
+	}()
 	for _, vec := range subs {
-		geo, e = g.parseWKB(vec.Geom, ref)
-		if e != nil {
+		if geo, e = g.parseWKB(vec.Geom, ref); e != nil {
 			continue
 		}
-		defer geo.Destroy()
+		gc = append(gc, geo)
 		ucGeo = ucGeo.Difference(geo)
-		defer ucGeo.Destroy()
+		gc = append(gc, ucGeo)
 	}
 	uc.Geom, err = ucGeo.ToWKB()
 	return
