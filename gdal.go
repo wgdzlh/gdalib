@@ -129,12 +129,12 @@ func (g *GdalToolbox) TransformWkb(wkb GdalGeo, srid, tSrid int) (ret GdalGeo, e
 	if err != nil {
 		return
 	}
+	defer geo.Destroy()
 	if err = geo.TransformTo(tRef); err != nil {
 		log.Error(g.logTag+"geo transform failed", zap.Error(err))
 		return
 	}
 	ret, err = geo.ToWKB()
-	geo.Destroy()
 	return
 }
 
@@ -192,7 +192,6 @@ func (g *GdalToolbox) GeoJSONToWkb(geoJson AnyJson) (ret GdalGeo, err error) {
 		return
 	}
 	ret, err = geo.ToWKB()
-	geo.Destroy()
 	return
 }
 
