@@ -12,7 +12,87 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	METEO_TIF_X = 6939
+	METEO_TIF_Y = 5211
+)
+
+// 读取一般Tif
+func (g *GdalToolbox) ParseRaster(tif string, buf [][]byte) (err error) {
+	bands := len(buf) // 需要读取的波段数
+	sds, err := gdal.Open(tif, gdal.ReadOnly)
+	if err != nil {
+		log.Error(g.logTag+"open tif failed", zap.Error(err))
+		err = ErrInvalidTif
+		return
+	}
+	defer sds.Close()
+	bc := sds.RasterCount()
+	if bc < bands {
+		log.Error(g.logTag+"tif bands not enough", zap.Int("bands", bc))
+		err = ErrWrongTif
+		return
+	}
+	log.Info(g.logTag+"start read tif", zap.Int("bands", bc), zap.Int("bufBn", bands))
+	for i := 1; i <= bands; i++ {
+		band := sds.RasterBand(i)
+		dt := band.RasterDataType()
+		x := band.XSize()
+		y := band.YSize()
+		if dt != gdal.Byte {
+			log.Error(g.logTag+"tif is malformed", zap.String("dataType", dt.Name()))
+			err = ErrWrongTif
+			return
+		}
+		log.Info(g.logTag+"read tif band", zap.Int("band", i), zap.Int("dt", int(dt)), zap.Int("width", x), zap.Int("height", y))
+		err = band.IO(gdal.Read, 0, 0, x, y, buf[i], x, y, 0, 0)
+		if err != nil {
+			log.Error(g.logTag+"read tif band failed", zap.Int("band", i), zap.Error(err))
+			err = ErrTifReadFailed
+			return
+		}
+	}
+	return
+}
+
+// 读取气象Tif
+func (g *GdalToolbox) ParseMeteoRaster(tif string, buf []int16) (err error) {
+	if len(buf) != METEO_TIF_X*METEO_TIF_Y {
+		err = ErrWrongBufferSize
+		return
+	}
+	sds, err := gdal.Open(tif, gdal.ReadOnly)
+	if err != nil {
+		log.Error(g.logTag+"open meteo tif failed", zap.Error(err))
+		err = ErrInvalidTif
+		return
+	}
+	defer sds.Close()
+	if bc := sds.RasterCount(); bc != 1 {
+		log.Error(g.logTag+"meteo tif can have only one band", zap.Int("bands", bc))
+		err = ErrWrongTif
+		return
+	}
+	band := sds.RasterBand(1)
+	dt := band.RasterDataType()
+	x := band.XSize()
+	y := band.YSize()
+	if dt != gdal.Int16 || x != METEO_TIF_X || y != METEO_TIF_Y {
+		log.Error(g.logTag+"meteo tif is malformed", zap.String("dataType", dt.Name()))
+		err = ErrWrongTif
+		return
+	}
+	log.Info(g.logTag+"read meteo tif", zap.Int("dt", int(dt)), zap.Int("width", x), zap.Int("height", y))
+	err = band.IO(gdal.Read, 0, 0, x, y, buf, x, y, 0, 0)
+	if err != nil {
+		log.Error(g.logTag+"read meteo tif band failed", zap.Error(err))
+		err = ErrTifReadFailed
+	}
+	return
+}
+
 // 按各自有效区WKT剪切，并按目标区域WKT镶嵌多张影像tif
+// 排序靠后的tif优先显示
 func (g *GdalToolbox) CropRasters(tifWkt []ImgMergeFile, extWkt, out string) (err error) {
 	n_tif := len(tifWkt)
 	if n_tif == 0 {
