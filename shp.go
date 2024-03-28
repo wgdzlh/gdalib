@@ -22,13 +22,14 @@ func (g *GdalToolbox) parseShp(shp string, noTrans ...bool) (ret gdal.Geometry, 
 	var (
 		layer    = ds.LayerByIndex(0)
 		mayTrans = len(noTrans) == 0 || !noTrans[0]
+		sp       gdal.SpatialReference
 		srid     int
 		feature  *gdal.Feature
-		e        error
 		gc       []destroyable
 	)
 	if mayTrans {
-		if srid, err = g.getSrid(layer.SpatialReference()); err != nil {
+		sp = layer.SpatialReference()
+		if srid, err = g.getSrid(sp); err != nil {
 			return
 		}
 	}
@@ -50,8 +51,9 @@ func (g *GdalToolbox) parseShp(shp string, noTrans ...bool) (ret gdal.Geometry, 
 	if mayTrans && srid != UNIVERSAL_SRID {
 		var tRef gdal.SpatialReference
 		if tRef, err = g.getSridRef(UNIVERSAL_SRID); err == nil {
+			ret.SetSpatialReference(sp)
 			if err = ret.TransformTo(tRef); err != nil {
-				log.Error(g.logTag+"geo transform failed", zap.Error(e))
+				log.Error(g.logTag+"geo transform failed", zap.Error(err))
 			}
 		}
 		if err != nil {
