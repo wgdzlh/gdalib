@@ -319,3 +319,23 @@ func (g *GdalToolbox) SubtractZones(uc *Uncertainty, subs []Uncertainty, srid in
 	uc.Geom, err = ucGeo.ToWKB()
 	return
 }
+
+// 获取WKT经纬度范围
+func (g *GdalToolbox) GetWktSpan(wkt string, srid int) (span [4]float64, err error) {
+	ref, err := g.getSridRef(srid)
+	if err != nil {
+		return
+	}
+	geo, e := gdal.CreateFromWKT(wkt, ref)
+	if e != nil {
+		err = ErrInvalidWKT
+		return
+	}
+	defer geo.Destroy()
+	envelop := geo.Envelope()
+	span[0] = envelop.MinX()
+	span[1] = envelop.MaxX()
+	span[2] = envelop.MinY()
+	span[3] = envelop.MaxY()
+	return
+}
