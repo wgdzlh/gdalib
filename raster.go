@@ -138,7 +138,7 @@ func (g *GdalToolbox) CropRasters(tifWkt []ImgMergeFile, extWkt, out string) (er
 	}
 	log.Info(g.logTag+"crop and merge rasters", zap.Int("tif_cnt", n_tif), zap.Bool("uniform", isUniform), zap.String("out", out))
 	if extWkt != "" {
-		if ext, err = gdal.CreateFromWKT(extWkt, ref); err != nil {
+		if ext, err = g.parseWKT(extWkt, ref); err != nil {
 			return
 		}
 		gc = append(gc, ext)
@@ -149,7 +149,7 @@ func (g *GdalToolbox) CropRasters(tifWkt []ImgMergeFile, extWkt, out string) (er
 	hasExt := ext != emptyGeometry && !ext.IsEmpty()
 	for i := n_tif - 1; i >= 0; i-- {
 		t := tifWkt[i]
-		if geo, err = gdal.CreateFromWKT(t.Wkt, ref); err != nil {
+		if geo, err = g.parseWKT(t.Wkt, ref); err != nil {
 			return
 		}
 		gc = append(gc, geo)

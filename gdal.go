@@ -1,6 +1,7 @@
 package gdalib
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -107,6 +108,7 @@ func (g *GdalToolbox) parseWKT(wkt string, ref gdal.SpatialReference) (ret gdal.
 	ret, err = gdal.CreateFromWKT(wkt, ref)
 	if err != nil {
 		log.Error(g.logTag+"parse wkt failed", zap.Error(err))
+		err = ErrInvalidWKT
 	}
 	return
 }
@@ -138,15 +140,41 @@ func (g *GdalToolbox) TransformWkb(wkb GdalGeo, srid, tSrid int) (ret GdalGeo, e
 	return
 }
 
+// 转换WKT坐标系
+func (g *GdalToolbox) TransformWkt(wkt string, srid, tSrid int) (ret string, err error) {
+	if tSrid == srid {
+		ret = wkt
+		return
+	}
+	ref, err := g.getSridRef(srid)
+	if err != nil {
+		return
+	}
+	tRef, err := g.getSridRef(tSrid)
+	if err != nil {
+		return
+	}
+	geo, err := g.parseWKT(wkt, ref)
+	if err != nil {
+		return
+	}
+	defer geo.Destroy()
+	if err = geo.TransformTo(tRef); err != nil {
+		log.Error(g.logTag+"geo transform failed", zap.Error(err))
+		return
+	}
+	ret, err = geo.ToWKT()
+	return
+}
+
 // 检查WKT有效性
 func (g *GdalToolbox) CheckWkt(wkt string, srid int) (err error) {
 	ref, err := g.getSridRef(srid)
 	if err != nil {
 		return
 	}
-	geo, e := gdal.CreateFromWKT(wkt, ref)
-	if e != nil {
-		err = ErrInvalidWKT
+	geo, err := g.parseWKT(wkt, ref)
+	if err != nil {
 		return
 	}
 	geo.Destroy()
@@ -326,9 +354,8 @@ func (g *GdalToolbox) GetWktSpan(wkt string, srid int) (span [4]float64, err err
 	if err != nil {
 		return
 	}
-	geo, e := gdal.CreateFromWKT(wkt, ref)
-	if e != nil {
-		err = ErrInvalidWKT
+	geo, err := g.parseWKT(wkt, ref)
+	if err != nil {
 		return
 	}
 	defer geo.Destroy()
@@ -338,4 +365,12 @@ func (g *GdalToolbox) GetWktSpan(wkt string, srid int) (span [4]float64, err err
 	span[2] = envelop.MinY()
 	span[3] = envelop.MaxY()
 	return
+}
+
+func PointsToWkt(lon1, lon2, lat1, lat2 float64) string {
+	return fmt.Sprintf("POLYGON((%[1]f %[3]f, %[1]f %[4]f, %[2]f %[4]f, %[2]f %[3]f, %[1]f %[3]f))", lon1, lon2, lat1, lat2)
+}
+
+func SpanToWkt(span [4]float64) string {
+	return PointsToWkt(span[0], span[1], span[2], span[3])
 }

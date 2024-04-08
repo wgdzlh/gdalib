@@ -135,9 +135,8 @@ func (g *GdalToolbox) GetAreaCoverageRatio(districtWkt string, imagesWkt []strin
 	if err != nil {
 		return
 	}
-	district, err := gdal.CreateFromWKT(districtWkt, ref)
+	district, err := g.parseWKT(districtWkt, ref)
 	if err != nil {
-		log.Error(g.logTag+"parse district wkt failed", zap.Error(err))
 		return
 	}
 	var (
@@ -151,7 +150,7 @@ func (g *GdalToolbox) GetAreaCoverageRatio(districtWkt string, imagesWkt []strin
 		}
 	}()
 	for _, gs := range imagesWkt {
-		if subGeo, err = gdal.CreateFromWKT(gs, ref); err != nil {
+		if subGeo, err = g.parseWKT(gs, ref); err != nil {
 			return
 		}
 		unionGeo = unionGeo.Union(subGeo)

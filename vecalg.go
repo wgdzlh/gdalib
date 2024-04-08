@@ -24,6 +24,7 @@ func (g *GdalToolbox) parseAlgWKT(wkt string) (ret gdal.Geometry, err error) {
 	ret, err = gdal.CreateFromWKT(wkt, ref)
 	if err != nil {
 		log.Error(g.logTag+"parse alg wkt failed", zap.Error(err))
+		err = ErrInvalidWKT
 	}
 	return
 }
