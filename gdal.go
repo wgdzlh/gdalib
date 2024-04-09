@@ -1,7 +1,6 @@
 package gdalib
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -365,12 +364,4 @@ func (g *GdalToolbox) GetWktSpan(wkt string, srid int) (span [4]float64, err err
 	span[2] = envelop.MinY()
 	span[3] = envelop.MaxY()
 	return
-}
-
-func PointsToWkt(lon1, lon2, lat1, lat2 float64) string {
-	return fmt.Sprintf("POLYGON((%[1]f %[3]f, %[1]f %[4]f, %[2]f %[4]f, %[2]f %[3]f, %[1]f %[3]f))", lon1, lon2, lat1, lat2)
-}
-
-func SpanToWkt(span [4]float64) string {
-	return PointsToWkt(span[0], span[1], span[2], span[3])
 }
