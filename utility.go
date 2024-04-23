@@ -70,3 +70,33 @@ func SpanIn4326ToMeteoGridIds(span [4]float64) (ids []int32) {
 	}
 	return
 }
+
+func SpanIn4326ToMeteoGridIdSpans(span [4]float64) (ids [][2]int32) {
+	span[0], span[2] = Convert4326To3857(span[0], span[2])
+	span[1], span[3] = Convert4326To3857(span[1], span[3])
+
+	first := LonLatIn3857ToMeteoGridIdx(span[0], span[3])
+	if first < 0 {
+		return
+	}
+	last := LonLatIn3857ToMeteoGridIdx(span[1], span[2])
+	if last < 0 || last < first {
+		return
+	}
+	minX := first % METEO_TIF_X
+	maxX := last % METEO_TIF_X
+	if maxX < minX {
+		return
+	}
+	diffX := maxX - minX
+	jumpX := METEO_TIF_X - diffX
+	n := 0
+	for i := first; i <= last; {
+		ids = append(ids, [2]int32{i, last})
+		i += diffX
+		ids[n][1] = i
+		n++
+		i += jumpX
+	}
+	return
+}
