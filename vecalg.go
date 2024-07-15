@@ -280,17 +280,19 @@ func (g *GdalToolbox) Reshape(wkt, line string) (out string, err error) {
 			defer trimRegion.Destroy()
 			if trimRegion.IsSimple() {
 				geo = geo.Difference(buffedLine)
-				ng := geo.GeometryCount()
-				for i := 0; i < ng; {
-					if trimRegion.Intersects(geo.Geometry(i)) {
-						if err = geo.RemoveGeometry(i, true); err != nil {
-							geo.Destroy()
-							return
+				if geo.Type() == gdal.GT_MultiPolygon {
+					ng := geo.GeometryCount()
+					for i := 0; i < ng; {
+						if trimRegion.Intersects(geo.Geometry(i)) {
+							if err = geo.RemoveGeometry(i, true); err != nil {
+								geo.Destroy()
+								return
+							}
+							ng--
+							continue
 						}
-						ng--
-						continue
+						i++
 					}
-					i++
 				}
 			} else {
 				if geo, err = removeSmallerPolygons(geo, buffedLine); err != nil {
@@ -303,6 +305,80 @@ func (g *GdalToolbox) Reshape(wkt, line string) (out string, err error) {
 		return
 	}
 	out, err = simplifyMultiPolygon(geo)
+	return
+}
+
+func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
+	geo, st, np, err := g.parseAndCheck(wkt, line)
+	if err != nil {
+		return
+	}
+	defer geo.Destroy()
+	defer st.Destroy()
+
+	if !geo.Intersects(st) {
+		if np == 2 {
+			out = wkt
+		} else {
+			var subRegion gdal.Geometry
+			if subRegion, err = buildPolygon(st, np); err != nil {
+				return
+			}
+			defer subRegion.Destroy()
+			geo = geo.Difference(subRegion)
+			defer geo.Destroy()
+			out, err = geo.ToWKT()
+		}
+		return
+	}
+
+	ends := st.Boundary()
+	defer ends.Destroy()
+
+	if ends.GeometryCount() != 2 {
+		err = ErrWrongLineEndsCount
+		return
+	}
+
+	if geo.Intersects(ends.Geometry(0)) && geo.Intersects(ends.Geometry(1)) {
+		var addRegion gdal.Geometry
+		if addRegion, err = buildPolygon(st, np); err != nil {
+			return
+		}
+		defer addRegion.Destroy()
+		if geo.Contains(addRegion) {
+			geo = geo.Difference(addRegion)
+		} else {
+			geo = geo.Union(addRegion)
+		}
+	} else if geo.Disjoint(ends) {
+		if np <= 3 {
+			buffedLine := st.Buffer(CutLineBuffDist, 1)
+			defer buffedLine.Destroy()
+			if geo, err = removeSmallerPolygons(geo, buffedLine); err != nil {
+				return
+			}
+		} else {
+			var trimRegion gdal.Geometry
+			if trimRegion, err = buildPolygon(st, np); err != nil {
+				return
+			}
+			defer trimRegion.Destroy()
+			if trimRegion.IsSimple() {
+				geo = geo.Difference(trimRegion)
+			} else {
+				buffedLine := st.Buffer(CutLineBuffDist, 1)
+				defer buffedLine.Destroy()
+				if geo, err = removeSmallerPolygons(geo, buffedLine); err != nil {
+					return
+				}
+			}
+		}
+	} else {
+		err = ErrWrongPositionedLine
+		return
+	}
+	out, err = simplifyMultiPolygon2(geo)
 	return
 }
 
@@ -374,6 +450,21 @@ func simplifyMultiPolygon(geo gdal.Geometry) (wkt string, err error) {
 			geo = gdal.Create(gdal.GT_Polygon)
 			defer geo.Destroy()
 		case 1:
+			geo = geo.Geometry(0)
+		}
+	}
+	wkt, err = geo.ToWKT()
+	return
+}
+
+func simplifyMultiPolygon2(geo gdal.Geometry) (wkt string, err error) {
+	defer geo.Destroy()
+	if geo.Type() == gdal.GT_MultiPolygon {
+		switch geo.GeometryCount() {
+		case 0:
+			geo = gdal.Create(gdal.GT_Polygon)
+			defer geo.Destroy()
+		default:
 			geo = geo.Geometry(0)
 		}
 	}

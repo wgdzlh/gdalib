@@ -1,6 +1,11 @@
 package gdalib
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/lukeroth/gdal"
+)
 
 func TestReadMeteoTif(t *testing.T) {
 	g := NewGdalToolbox()
@@ -37,4 +42,18 @@ func TestTrans(t *testing.T) {
 func TestDemo(t *testing.T) {
 	extent := PointsToWkt(8133511.7542897, 15081375.1438741, 1970599.25164441, 7188255.41580702)
 	t.Log(extent)
+}
+
+func TestSpan(t *testing.T) {
+	idSpans := SpanIn4326ToMeteoGridIdSpans([4]float64{114.45427660701012, 114.49117701581883, 22.583111358451404, 22.613144370489223})
+	t.Log(idSpans)
+}
+
+func TestEmpty(t *testing.T) {
+	geo := gdal.Create(gdal.GT_MultiPolygon)
+	wkt, _ := geo.ToWKT()
+	t.Log(wkt, strings.HasSuffix(wkt, "EMPTY"))
+	geo = gdal.Create(gdal.GT_Polygon)
+	wkt, _ = geo.ToWKT()
+	t.Log(wkt, strings.HasSuffix(wkt, "EMPTY"))
 }
