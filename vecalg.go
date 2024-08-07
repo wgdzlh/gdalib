@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	CutLineBuffDist = 0.005
-	BuffPercent     = 0.05
-	BuffQuadSegs    = 12
+	LineBuffDist = 0.0001
+	BuffPercent  = 0.05
+	BuffQuadSegs = 12
 )
 
 func (g *GdalToolbox) parseAlgWKT(wkt string) (ret gdal.Geometry, err error) {
@@ -149,7 +149,7 @@ func (g *GdalToolbox) Cut(wkt, line string) (out []string, err error) {
 		out = []string{wkt}
 		return
 	}
-	buffedLine := st.Buffer(CutLineBuffDist, 1)
+	buffedLine := st.Buffer(LineBuffDist, 1)
 	defer buffedLine.Destroy()
 
 	switch geo.Type() {
@@ -257,7 +257,7 @@ func (g *GdalToolbox) Reshape(wkt, line string) (out string, err error) {
 		return
 	}
 	// log.Info(g.logTag+"ends within st", zap.Bool("ret", ends.Intersects(st)))
-	buffedLine := st.Buffer(CutLineBuffDist, 1)
+	buffedLine := st.Buffer(LineBuffDist, 1)
 	defer buffedLine.Destroy()
 
 	if geo.Intersects(ends.Geometry(0)) && geo.Intersects(ends.Geometry(1)) {
@@ -335,25 +335,42 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 	ends := st.Boundary()
 	defer ends.Destroy()
 
-	if ends.GeometryCount() != 2 {
-		err = ErrWrongLineEndsCount
-		return
-	}
+	isRing := ends.IsEmpty()
 
-	if geo.Intersects(ends.Geometry(0)) && geo.Intersects(ends.Geometry(1)) {
-		var addRegion gdal.Geometry
-		if addRegion, err = buildPolygon(st, np); err != nil {
-			return
-		}
-		defer addRegion.Destroy()
-		if geo.Contains(addRegion) {
-			geo = geo.Difference(addRegion)
+	if isRing || geo.Intersects(ends.Geometry(0)) && geo.Intersects(ends.Geometry(1)) {
+		if geo.Contains(st) {
+			if np == 2 {
+				out = wkt
+				return
+			}
+			var subRegion gdal.Geometry
+			if subRegion, err = buildPolygon(st, np); err != nil {
+				return
+			}
+			defer subRegion.Destroy()
+			geo = geo.Difference(subRegion)
 		} else {
-			geo = geo.Union(addRegion)
+			buffedLine := st.Buffer(LineBuffDist, 1)
+			defer buffedLine.Destroy()
+			geo = geo.Union(buffedLine)
+			if geo.Type() == gdal.GT_Polygon {
+				ng := geo.GeometryCount()
+				for i := 1; i < ng; {
+					if buffedLine.Intersects(geo.Geometry(i)) {
+						if err = geo.RemoveGeometry(i, true); err != nil {
+							geo.Destroy()
+							return
+						}
+						ng--
+						continue
+					}
+					i++
+				}
+			}
 		}
 	} else if geo.Disjoint(ends) {
 		if np <= 3 {
-			buffedLine := st.Buffer(CutLineBuffDist, 1)
+			buffedLine := st.Buffer(LineBuffDist, 1)
 			defer buffedLine.Destroy()
 			if geo, err = removeSmallerPolygons(geo, buffedLine); err != nil {
 				return
@@ -367,7 +384,7 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 			if trimRegion.IsSimple() {
 				geo = geo.Difference(trimRegion)
 			} else {
-				buffedLine := st.Buffer(CutLineBuffDist, 1)
+				buffedLine := st.Buffer(LineBuffDist, 1)
 				defer buffedLine.Destroy()
 				if geo, err = removeSmallerPolygons(geo, buffedLine); err != nil {
 					return
@@ -481,8 +498,10 @@ func buildPolygon(line gdal.Geometry, np int) (ret gdal.Geometry, err error) {
 		x, y, _ = line.Point(i)
 		ring.AddPoint2D(x, y)
 	}
-	x, y, _ = ring.Point(0)
-	ring.AddPoint2D(x, y)
+	if !ring.IsRing() {
+		x, y, _ = ring.Point(0)
+		ring.AddPoint2D(x, y)
+	}
 	ret = gdal.Create(gdal.GT_Polygon)
 	if err = ret.AddGeometryDirectly(ring); err != nil {
 		ring.Destroy()
