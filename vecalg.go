@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	LineBuffDist = 0.0001
-	BuffPercent  = 0.05
-	BuffQuadSegs = 12
+	CutLineBuffDist   = 0.0001
+	MergeLineBuffDist = 0.002
+	BuffPercent       = 0.05
+	BuffQuadSegs      = 12
 )
 
 func (g *GdalToolbox) parseAlgWKT(wkt string) (ret gdal.Geometry, err error) {
@@ -149,7 +150,7 @@ func (g *GdalToolbox) Cut(wkt, line string) (out []string, err error) {
 		out = []string{wkt}
 		return
 	}
-	buffedLine := st.Buffer(LineBuffDist, 1)
+	buffedLine := st.Buffer(CutLineBuffDist, 1)
 	defer buffedLine.Destroy()
 
 	switch geo.Type() {
@@ -257,7 +258,7 @@ func (g *GdalToolbox) Reshape(wkt, line string) (out string, err error) {
 		return
 	}
 	// log.Info(g.logTag+"ends within st", zap.Bool("ret", ends.Intersects(st)))
-	buffedLine := st.Buffer(LineBuffDist, 1)
+	buffedLine := st.Buffer(CutLineBuffDist, 1)
 	defer buffedLine.Destroy()
 
 	if geo.Intersects(ends.Geometry(0)) && geo.Intersects(ends.Geometry(1)) {
@@ -350,27 +351,27 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 			defer subRegion.Destroy()
 			geo = geo.Difference(subRegion)
 		} else {
-			buffedLine := st.Buffer(LineBuffDist, 1)
+			buffedLine := st.Buffer(MergeLineBuffDist, 1)
 			defer buffedLine.Destroy()
 			geo = geo.Union(buffedLine)
-			if geo.Type() == gdal.GT_Polygon {
+			switch geo.Type() {
+			case gdal.GT_Polygon:
+			case gdal.GT_MultiPolygon:
 				ng := geo.GeometryCount()
-				for i := 1; i < ng; {
-					if buffedLine.Intersects(geo.Geometry(i)) {
-						if err = geo.RemoveGeometry(i, true); err != nil {
-							geo.Destroy()
-							return
-						}
-						ng--
-						continue
-					}
-					i++
-				}
+				log.Info(g.logTag+"got multi polygon in line merge", zap.Int("ng", ng))
+				defer geo.Destroy()
+				geo = geo.Geometry(0)
+			default:
+				err = ErrGdalWrongGeoType
+				return
+			}
+			if err = removeConcatHolesInPolygon(geo, buffedLine); err != nil {
+				return
 			}
 		}
 	} else if geo.Disjoint(ends) {
 		if np <= 3 {
-			buffedLine := st.Buffer(LineBuffDist, 1)
+			buffedLine := st.Buffer(CutLineBuffDist, 1)
 			defer buffedLine.Destroy()
 			if geo, err = removeSmallerPolygons(geo, buffedLine); err != nil {
 				return
@@ -384,7 +385,7 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 			if trimRegion.IsSimple() {
 				geo = geo.Difference(trimRegion)
 			} else {
-				buffedLine := st.Buffer(LineBuffDist, 1)
+				buffedLine := st.Buffer(CutLineBuffDist, 1)
 				defer buffedLine.Destroy()
 				if geo, err = removeSmallerPolygons(geo, buffedLine); err != nil {
 					return
@@ -537,6 +538,22 @@ func removeHolesInPolygon(geo gdal.Geometry) (err error) {
 	// default:
 	// 	err = ErrGdalWrongGeoType
 	// }
+	return
+}
+
+func removeConcatHolesInPolygon(geo, line gdal.Geometry) (err error) {
+	ng := geo.GeometryCount()
+	for i := 1; i < ng; {
+		if line.Intersects(geo.Geometry(i)) {
+			if err = geo.RemoveGeometry(i, true); err != nil {
+				geo.Destroy()
+				return
+			}
+			ng--
+			continue
+		}
+		i++
+	}
 	return
 }
 
