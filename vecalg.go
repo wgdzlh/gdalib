@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	CutLineBuffDist = 0.0002
-	BuffPercent     = 0.05
-	BuffQuadSegs    = 12
+	CutLineBuffDist     = 0.0002
+	MergedDistThreshold = 0.0008
+	BuffPercent         = 0.05
+	BuffQuadSegs        = 12
 )
 
 func (g *GdalToolbox) parseAlgWKT(wkt string) (ret gdal.Geometry, err error) {
@@ -553,7 +554,7 @@ func removeConcatHolesInPolygon(geo, line gdal.Geometry) (err error) {
 			return
 		}
 		gc = append(gc, tmp)
-		if line.Intersects(tmp) {
+		if line.Distance(tmp) < MergedDistThreshold {
 			if err = geo.RemoveGeometry(i, true); err != nil {
 				return
 			}
