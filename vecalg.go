@@ -11,7 +11,8 @@ import (
 )
 
 const (
-	CutLineBuffDist     = 0.0002
+	MinIntersectDist    = 0.0002
+	CutLineBuffDist     = 0.0004
 	MergedDistThreshold = 0.0008
 	BuffPercent         = 0.05
 	BuffQuadSegs        = 12
@@ -317,40 +318,37 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 	defer geo.Destroy()
 	defer st.Destroy()
 
-	if !geo.Intersects(st) {
-		if np == 2 {
-			out = wkt
-		} else {
-			var subRegion gdal.Geometry
-			if subRegion, err = buildPolygon(st, np); err != nil {
-				return
-			}
-			defer subRegion.Destroy()
-			geo = geo.Difference(subRegion)
-			defer geo.Destroy()
-			out, err = geo.ToWKT()
-		}
+	if st.Distance(geo) >= MinIntersectDist {
+		out = wkt
 		return
 	}
 
 	ends := st.Boundary()
+	shrink := geo.Buffer(-MinIntersectDist, 1)
 	defer ends.Destroy()
+	defer shrink.Destroy()
 
-	isRing := ends.IsEmpty()
-
-	if isRing || geo.Intersects(ends.Geometry(0)) && geo.Intersects(ends.Geometry(1)) {
-		if geo.Contains(st) {
-			if np == 2 {
-				out = wkt
-				return
-			}
-			var subRegion gdal.Geometry
-			if subRegion, err = buildPolygon(st, np); err != nil {
-				return
-			}
-			defer subRegion.Destroy()
-			geo = geo.Difference(subRegion)
-		} else {
+	if shrink.Contains(st) {
+		if np == 2 {
+			out = wkt
+			return
+		}
+		var subRegion gdal.Geometry
+		if subRegion, err = buildPolygon(st, np); err != nil {
+			return
+		}
+		defer subRegion.Destroy()
+		geo = geo.Difference(subRegion)
+	} else if shrink.Intersects(st) && shrink.Disjoint(ends) {
+		buffedLine := st.Buffer(CutLineBuffDist, 1)
+		defer buffedLine.Destroy()
+		if geo, err = removeSmallerPolygons(geo, buffedLine); err != nil {
+			return
+		}
+	} else {
+		expand := geo.Buffer(MinIntersectDist, 1)
+		defer expand.Destroy()
+		if expand.Contains(ends) {
 			buffedLine := st.Buffer(CutLineBuffDist, 1)
 			defer buffedLine.Destroy()
 			geo = geo.Union(buffedLine)
@@ -364,33 +362,10 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 				geo.Destroy()
 				return
 			}
-		}
-	} else if geo.Disjoint(ends) {
-		if np <= 3 {
-			buffedLine := st.Buffer(CutLineBuffDist, 1)
-			defer buffedLine.Destroy()
-			if geo, err = removeSmallerPolygons(geo, buffedLine); err != nil {
-				return
-			}
 		} else {
-			var trimRegion gdal.Geometry
-			if trimRegion, err = buildPolygon(st, np); err != nil {
-				return
-			}
-			defer trimRegion.Destroy()
-			if trimRegion.IsSimple() {
-				geo = geo.Difference(trimRegion)
-			} else {
-				buffedLine := st.Buffer(CutLineBuffDist, 1)
-				defer buffedLine.Destroy()
-				if geo, err = removeSmallerPolygons(geo, buffedLine); err != nil {
-					return
-				}
-			}
+			err = ErrWrongPositionedLine
+			return
 		}
-	} else {
-		err = ErrWrongPositionedLine
-		return
 	}
 	out, err = simplifyMultiPolygon2(geo)
 	return
