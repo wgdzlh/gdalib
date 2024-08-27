@@ -328,9 +328,14 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 	defer ends.Destroy()
 	defer shrink.Destroy()
 
-	crossed := shrink.Intersects(st)
+	contained := shrink.Contains(st)
+	crossed := false
 
-	if shrink.Contains(st) {
+	if !contained {
+		crossed = shrink.Intersects(st)
+	}
+
+	if contained {
 		if np == 2 {
 			out = wkt
 			return
@@ -342,33 +347,48 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 		defer subRegion.Destroy()
 		geo = geo.Difference(subRegion)
 	} else if crossed && shrink.Disjoint(ends) {
-		buffedLine := st.Buffer(CutLineBuffDist, 1)
-		defer buffedLine.Destroy()
-		if geo, err = removeSmallerPolygons(geo, buffedLine); err != nil {
+		var lineParts gdal.Geometry
+		if np >= 5 {
+			// 获取需要填充的线段集合
+			lineParts = st.Difference(geo)
+			defer lineParts.Destroy()
+			if lineParts.Type() == gdal.GT_MultiLineString {
+				ng := geo.GeometryCount()
+				for i := 0; i < ng; {
+					if lineParts.Geometry(i).Intersects(ends) {
+						if err = lineParts.RemoveGeometry(i, true); err != nil {
+							return
+						}
+						ng--
+						continue
+					}
+					i++
+				}
+			} else {
+				lineParts = emptyGeometry
+			}
+		}
+		if geo, err = cropWithLine(geo, st); err != nil {
 			return
+		}
+		if lineParts != emptyGeometry && !lineParts.IsEmpty() {
+			defer geo.Destroy()
+			if geo, err = muffWithLine(geo, lineParts); err != nil {
+				geo.Destroy()
+				return
+			}
 		}
 	} else {
 		expand := geo.Buffer(MinIntersectDist, 1)
 		defer expand.Destroy()
 		if expand.Contains(ends) {
 			if crossed {
-				buffedLine := st.Buffer(MinIntersectDist, 1)
-				defer buffedLine.Destroy()
-				if geo, err = removeSmallerPolygons(geo, buffedLine); err != nil {
+				if geo, err = cropWithLine(geo, st); err != nil {
 					return
 				}
 				defer geo.Destroy()
 			}
-			buffedLine := st.Buffer(CutLineBuffDist, 1)
-			defer buffedLine.Destroy()
-			geo = geo.Union(buffedLine)
-			switch geo.Type() {
-			case gdal.GT_Polygon:
-				err = removeConcatHolesInPolygon(geo, buffedLine)
-			default:
-				err = ErrGdalWrongGeoType
-			}
-			if err != nil {
+			if geo, err = muffWithLine(geo, st); err != nil {
 				geo.Destroy()
 				return
 			}
@@ -378,6 +398,25 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 		}
 	}
 	out, err = simplifyMultiPolygon2(geo)
+	return
+}
+
+func cropWithLine(geo, st gdal.Geometry) (ret gdal.Geometry, err error) {
+	buffedLine := st.Buffer(MinIntersectDist, 1)
+	ret, err = removeSmallerPolygons(geo, buffedLine)
+	buffedLine.Destroy()
+	return
+}
+
+func muffWithLine(geo, st gdal.Geometry) (ret gdal.Geometry, err error) {
+	buffedLine := st.Buffer(CutLineBuffDist, 1)
+	ret = geo.Union(buffedLine)
+	if ret.Type() == gdal.GT_Polygon {
+		err = removeConcatHolesInPolygon(ret, buffedLine)
+	} else {
+		err = ErrGdalWrongGeoType
+	}
+	buffedLine.Destroy()
 	return
 }
 
