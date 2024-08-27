@@ -351,7 +351,7 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 		lineParts := st.Difference(expand)
 		defer lineParts.Destroy()
 		if lineParts.Type() == gdal.GT_MultiLineString {
-			ng := geo.GeometryCount()
+			ng := lineParts.GeometryCount()
 			for i := 0; i < ng; {
 				if lineParts.Geometry(i).Intersects(ends) {
 					if err = lineParts.RemoveGeometry(i, true); err != nil {
@@ -369,6 +369,8 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 			return
 		}
 		if lineParts != emptyGeometry && !lineParts.IsEmpty() {
+			// wkt, _ := lineParts.ToWKT()
+			// log.Info("line parts", zap.String("t", wkt))
 			defer geo.Destroy()
 			if geo, err = muffWithLine(geo, lineParts); err != nil {
 				geo.Destroy()
