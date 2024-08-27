@@ -328,6 +328,8 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 	defer ends.Destroy()
 	defer shrink.Destroy()
 
+	crossed := shrink.Intersects(st)
+
 	if shrink.Contains(st) {
 		if np == 2 {
 			out = wkt
@@ -339,7 +341,7 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 		}
 		defer subRegion.Destroy()
 		geo = geo.Difference(subRegion)
-	} else if shrink.Intersects(st) && shrink.Disjoint(ends) {
+	} else if crossed && shrink.Disjoint(ends) {
 		buffedLine := st.Buffer(CutLineBuffDist, 1)
 		defer buffedLine.Destroy()
 		if geo, err = removeSmallerPolygons(geo, buffedLine); err != nil {
@@ -349,6 +351,14 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 		expand := geo.Buffer(MinIntersectDist, 1)
 		defer expand.Destroy()
 		if expand.Contains(ends) {
+			if crossed {
+				buffedLine := st.Buffer(MinIntersectDist, 1)
+				defer buffedLine.Destroy()
+				if geo, err = removeSmallerPolygons(geo, buffedLine); err != nil {
+					return
+				}
+				defer geo.Destroy()
+			}
 			buffedLine := st.Buffer(CutLineBuffDist, 1)
 			defer buffedLine.Destroy()
 			geo = geo.Union(buffedLine)
