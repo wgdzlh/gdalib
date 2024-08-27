@@ -323,19 +323,10 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 		return
 	}
 
-	ends := st.Boundary()
 	shrink := geo.Buffer(-MinIntersectDist, 1)
-	defer ends.Destroy()
 	defer shrink.Destroy()
 
-	contained := shrink.Contains(st)
-	crossed := false
-
-	if !contained {
-		crossed = shrink.Intersects(st)
-	}
-
-	if contained {
+	if shrink.Contains(st) {
 		if np == 2 {
 			out = wkt
 			return
@@ -345,28 +336,34 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 			return
 		}
 		defer subRegion.Destroy()
-		geo = geo.Difference(subRegion)
-	} else if crossed && shrink.Disjoint(ends) {
-		var lineParts gdal.Geometry
-		if np >= 5 {
-			// 获取需要填充的线段集合
-			lineParts = st.Difference(geo)
-			defer lineParts.Destroy()
-			if lineParts.Type() == gdal.GT_MultiLineString {
-				ng := geo.GeometryCount()
-				for i := 0; i < ng; {
-					if lineParts.Geometry(i).Intersects(ends) {
-						if err = lineParts.RemoveGeometry(i, true); err != nil {
-							return
-						}
-						ng--
-						continue
+		out, err = simplifyMultiPolygon2(geo.Difference(subRegion))
+		return
+	}
+
+	expand := geo.Buffer(MinIntersectDist, 1)
+	ends := st.Boundary()
+	defer expand.Destroy()
+	defer ends.Destroy()
+
+	crossed := shrink.Intersects(st)
+	if crossed && shrink.Disjoint(ends) {
+		// 获取需要填充的线段集合
+		lineParts := st.Difference(expand)
+		defer lineParts.Destroy()
+		if lineParts.Type() == gdal.GT_MultiLineString {
+			ng := geo.GeometryCount()
+			for i := 0; i < ng; {
+				if lineParts.Geometry(i).Intersects(ends) {
+					if err = lineParts.RemoveGeometry(i, true); err != nil {
+						return
 					}
-					i++
+					ng--
+					continue
 				}
-			} else {
-				lineParts = emptyGeometry
+				i++
 			}
+		} else {
+			lineParts = emptyGeometry
 		}
 		if geo, err = cropWithLine(geo, st); err != nil {
 			return
@@ -378,24 +375,20 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 				return
 			}
 		}
-	} else {
-		expand := geo.Buffer(MinIntersectDist, 1)
-		defer expand.Destroy()
-		if expand.Contains(ends) {
-			if crossed {
-				if geo, err = cropWithLine(geo, st); err != nil {
-					return
-				}
-				defer geo.Destroy()
-			}
-			if geo, err = muffWithLine(geo, st); err != nil {
-				geo.Destroy()
+	} else if expand.Contains(ends) {
+		if crossed {
+			if geo, err = cropWithLine(geo, st); err != nil {
 				return
 			}
-		} else {
-			err = ErrWrongPositionedLine
+			defer geo.Destroy()
+		}
+		if geo, err = muffWithLine(geo, st); err != nil {
+			geo.Destroy()
 			return
 		}
+	} else {
+		err = ErrWrongPositionedLine
+		return
 	}
 	out, err = simplifyMultiPolygon2(geo)
 	return
