@@ -20,4 +20,5 @@ var (
 	ErrWrongTif            = errors.New("wrong tif")
 	ErrEmptyTif            = errors.New("empty tif")
 	ErrTifReadFailed       = errors.New("failed to read tif band")
+	ErrWrongRasterOffset   = errors.New("wrong raster offset")
 )

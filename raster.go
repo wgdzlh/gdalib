@@ -91,6 +91,52 @@ func (g *GdalToolbox) ParseMeteoRaster(tif string, buf []int16) (err error) {
 	return
 }
 
+// 获取气象Tif中的Band
+func (g *GdalToolbox) GetMeteoRasterBand(tif string) (band gdal.RasterBand, err error) {
+	sds, err := gdal.Open(tif, gdal.ReadOnly)
+	if err != nil {
+		log.Error(g.logTag+"open meteo tif failed", zap.Error(err))
+		err = ErrInvalidTif
+		return
+	}
+	if bc := sds.RasterCount(); bc != 1 {
+		log.Error(g.logTag+"meteo tif can have only one band", zap.Int("bands", bc))
+		err = ErrWrongTif
+		return
+	}
+	band = sds.RasterBand(1)
+	dt := band.RasterDataType()
+	x := band.XSize()
+	y := band.YSize()
+	if dt != gdal.Int16 || x != METEO_TIF_X || y != METEO_TIF_Y {
+		log.Error(g.logTag+"meteo tif is malformed", zap.String("dataType", dt.Name()))
+		err = ErrWrongTif
+		return
+	}
+	log.Info(g.logTag+"get meteo tif band", zap.Int("dt", int(dt)), zap.Int("width", x), zap.Int("height", y))
+	return
+}
+
+func (g *GdalToolbox) ReadMeteoRasterBandOffset(band gdal.RasterBand, xOff, yOff int) (ret int16, err error) {
+	if xOff >= METEO_TIF_X || yOff >= METEO_TIF_Y {
+		err = ErrWrongRasterOffset
+		return
+	}
+	buf := make([]int16, 1)
+	err = band.IO(gdal.Read, xOff, yOff, 1, 1, buf, 1, 1, 0, 0)
+	if err != nil {
+		log.Error(g.logTag+"read meteo tif band offset failed", zap.Error(err))
+		err = ErrTifReadFailed
+		return
+	}
+	ret = buf[0]
+	return
+}
+
+func (g *GdalToolbox) CloseMeteoRasterBand(band gdal.RasterBand) {
+	band.GetDataset().Close()
+}
+
 // 按各自有效区WKT剪切，并按目标区域WKT镶嵌多张影像tif
 // 排序靠后的tif优先显示
 func (g *GdalToolbox) CropRasters(tifWkt []ImgMergeFile, extWkt, out string) (err error) {
