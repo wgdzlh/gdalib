@@ -3,6 +3,7 @@ package gdalib
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lukeroth/gdal"
 )
@@ -70,4 +71,20 @@ func TestReshape2(t *testing.T) {
 	out, err = g.Reshape2("POLYGON((0 0,0 2,2 2,2 0,0 0))", "LINESTRING(0 3,3 0)")
 	t.Log(err)
 	t.Log(out)
+
+	gs1, _ := g.parseAlgWKT("POLYGON((0 0,0 2,2 2,2 0,0 0))")
+	gs2, _ := g.parseAlgWKT("MULTIPOLYGON(((0 0,0 2,2 2,2 0,0 0)),((0 0,0 3,3 3,3 0,0 0)),((0 0,0 3,3 3,3 0,0 0)))")
+	ret, err := MergeMultiPolygons(gs1, gs2)
+	out, _ = ret.ToWKT()
+	t.Log(err, out)
+
+	ret2 := ret.UnionCascaded()
+	out, _ = ret2.ToWKT()
+	t.Log(out)
+
+	ret.Destroy()
+	ret2.Destroy()
+
+	time.Sleep(time.Second)
+	t.Log("all done")
 }

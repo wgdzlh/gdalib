@@ -3,6 +3,8 @@ package gdalib
 import (
 	"fmt"
 	"math"
+
+	"github.com/lukeroth/gdal"
 )
 
 const (
@@ -97,6 +99,30 @@ func SpanIn4326ToMeteoGridIdSpans(span [4]float64) (ids [][2]int32) {
 		ids[n][1] = i
 		n++
 		i += jumpX
+	}
+	return
+}
+
+func MergeMultiPolygons(gs ...gdal.Geometry) (out gdal.Geometry, err error) {
+	out = gdal.Create(gdal.GT_MultiPolygon)
+	for _, g := range gs {
+		switch g.Type() {
+		case gdal.GT_Polygon:
+			if err = out.AddGeometryDirectly(g); err != nil {
+				return
+			}
+			continue
+		case gdal.GT_MultiPolygon:
+			for i, pn := 0, g.GeometryCount(); i < pn; i++ {
+				if err = out.AddGeometryDirectly(g.Geometry(0)); err != nil {
+					return
+				}
+				if err = g.RemoveGeometry(0, false); err != nil {
+					return
+				}
+			}
+		}
+		g.Destroy()
 	}
 	return
 }
