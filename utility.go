@@ -9,6 +9,10 @@ import (
 
 const (
 	degToRad = math.Pi / 180
+
+	xr = 20037508.34 / 180
+	yr = xr / degToRad
+	tr = degToRad / 2
 )
 
 func PointsToWkt(lon1, lon2, lat1, lat2 float64) string {
@@ -20,12 +24,14 @@ func SpanToWkt(span [4]float64) string {
 }
 
 func Convert4326To3857(lon, lat float64) (lonIn3857, latIn3857 float64) {
-	const xr = 20037508.34 / 180
-	const yr = xr / degToRad
-	const tr = degToRad / 2
-
 	lonIn3857 = lon * xr
 	latIn3857 = math.Log(math.Tan((90+lat)*tr)) * yr
+	return
+}
+
+func Convert3857To4326(lonIn3857, latIn3857 float64) (lon, lat float64) {
+	lon = lonIn3857 / xr
+	lat = math.Atan(math.Pow(math.E, latIn3857/yr))/tr - 90
 	return
 }
 
@@ -37,6 +43,17 @@ func LonLatIn3857ToMeteoGridIdx(lonIn3857, latIn3857 float64) (idx int32) {
 	} else {
 		idx = -1
 	}
+	return
+}
+
+func MeteoGridIdxToLonLatIn3857(idx int32) (lonIn3857, latIn3857 float64) {
+	if idx < 0 || idx >= METEO_TIF_X*METEO_TIF_Y {
+		return
+	}
+	x := idx % METEO_TIF_X
+	y := idx / METEO_TIF_X
+	lonIn3857 = float64(x)*1001.277 + 8133511
+	latIn3857 = 7188255 - float64(y)*1001.277
 	return
 }
 

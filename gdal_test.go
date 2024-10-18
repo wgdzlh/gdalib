@@ -88,3 +88,12 @@ func TestReshape2(t *testing.T) {
 	time.Sleep(time.Second)
 	t.Log("all done")
 }
+
+func TestTransIdxToLonLat(t *testing.T) {
+	a := int32(15987040)
+	lon, lat := MeteoGridIdxToLonLatIn3857(a)
+	t.Logf("%f %f", lon, lat)
+
+	lon, lat = Convert3857To4326(lon, lat)
+	t.Logf("%.10f,%.10f", lon, lat)
+}
