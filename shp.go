@@ -300,6 +300,45 @@ func (g *GdalToolbox) ParseShapefile(shp, labelField string) (ret []Speckle, err
 	}
 }
 
+// 从shp文件中解析出图斑矢量Wkt
+func (g *GdalToolbox) ParseShapefileToWkt(shp string) (ret []string, err error) {
+	driver := gdal.OGRDriverByName(SHP_DRIVER_NAME)
+	ds, ok := driver.Open(shp, 0)
+	if !ok {
+		err = ErrGdalDriverOpen
+		return
+	}
+	defer ds.Destroy()
+	layer := ds.LayerByIndex(0)
+	ret = make([]string, 0, 128)
+	var (
+		feature *gdal.Feature
+		geo     gdal.Geometry
+		wkt     string
+		e       error
+		gc      []destroyable
+	)
+	defer func() {
+		for _, v := range gc {
+			v.Destroy()
+		}
+	}()
+	for {
+		if feature = layer.NextFeature(); feature != nil {
+			gc = append(gc, *feature)
+			geo = feature.Geometry()
+			wkt, e = geo.ToWKT()
+			if e != nil {
+				log.Error(g.logTag+"err in wkt convert", zap.String("geom", geo.ToGML()), zap.Error(e))
+				continue
+			}
+			ret = append(ret, wkt)
+		} else {
+			return
+		}
+	}
+}
+
 // 更新shp文件中的标签，可通过zone shp（两个shp坐标系要一致）指定更新/截取区域
 func (g *GdalToolbox) UpdateLabelInShapefile(shp, labelField, zone string, alignRet AlignedLabel) (err error) {
 	needUpdate := false
