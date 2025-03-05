@@ -124,10 +124,13 @@ func GetNowTimeTag() string {
 	return t[:len(tf)-4] + t[len(tf)-3:]
 }
 
-func BsToHex(s string) string {
-	src := S2B(s)
-	dst := make([]byte, hex.EncodedLen(len(src)))
-	hex.Encode(dst, src)
+func StrToHex(s string) string {
+	return BsToHex(S2B(s))
+}
+
+func BsToHex(bs []byte) string {
+	dst := make([]byte, hex.EncodedLen(len(bs)))
+	hex.Encode(dst, bs)
 	return B2S(dst)
 }
 

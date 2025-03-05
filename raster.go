@@ -195,7 +195,7 @@ func (g *GdalToolbox) CropRasters(tifWkt []ImgMergeFile, extWkt, out string) (er
 	hasExt := ext != emptyGeometry && !ext.IsEmpty()
 	for i := n_tif - 1; i >= 0; i-- {
 		t := tifWkt[i]
-		if geo, err = g.parseWKT(t.Wkt, ref); err != nil {
+		if geo, err = g.parseWKB(t.Wkb, ref); err != nil {
 			return
 		}
 		gc = append(gc, geo)
@@ -209,7 +209,7 @@ func (g *GdalToolbox) CropRasters(tifWkt []ImgMergeFile, extWkt, out string) (er
 			gc = append(gc, ext)
 		}
 		gt := geo.Type()
-		if (gt != gdal.GT_MultiPolygon && gt != gdal.GT_Polygon) || geo.GeometryCount() == 0 {
+		if (gt != gdal.GT_MultiPolygon && gt != gdal.GT_Polygon) || geo.IsEmpty() {
 			log.Info(g.logTag+"encounter empty cut line geo", zap.Int("idx", i), zap.String("img", t.Infile))
 			continue
 		}

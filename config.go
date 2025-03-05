@@ -29,4 +29,12 @@ const (
 	SHP_FIELD_OID = "oid"
 
 	TMP_GEOJSON = "geo_%s.json"
+
+	geomPrefixLen = 5
+	sridPrefix    = "0103000020E61" // srid 4326 prefix
+
+	SHP_FIELD_ID  = "ID"
+	SHP_FIELD_SID = "站点ID"
+	// SHP_FIELD_LABEL = "区域"
+	SHP_FIELD_TIF = "basename"
 )

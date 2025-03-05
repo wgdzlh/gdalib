@@ -16,6 +16,22 @@ type Speckle struct {
 	ClassName string  // 标签名
 }
 
+type TideSpeckle struct {
+	Id    string // 图斑ID
+	Label string // 标签名
+	Geom  string // 图斑的矢量面
+}
+
+type TideSpan struct {
+	SiteId string `json:"site_id"` // 潮汐站点ID
+	Wkt    string `json:"wkt"`     // 潮汐打标WKT
+}
+
+type InlayShpGeo struct {
+	Tif string
+	Geo GdalGeo
+}
+
 // 区域矢量
 type Uncertainty struct {
 	Id   int
@@ -25,5 +41,5 @@ type Uncertainty struct {
 type ImgMergeFile struct {
 	Infile    string `json:"infile"`     // 镶嵌影像
 	BandOrder string `json:"band_order"` // 波段顺序
-	Wkt       string `json:"wkt"`        // 镶嵌影像有效范围
+	Wkb       []byte `json:"wkb"`        // 镶嵌影像有效范围
 }
