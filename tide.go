@@ -46,8 +46,8 @@ func (g *GdalToolbox) ParseTideSiteShp(shp string) (ret []TideSpeckle, err error
 		gc      []destroyable
 	)
 	defer func() {
-		for _, g := range gc {
-			g.Destroy()
+		for _, v := range gc {
+			v.Destroy()
 		}
 	}()
 	for {
@@ -106,8 +106,8 @@ func (g *GdalToolbox) ParseTideSpanShp(shp string) (ret []TideSpan, err error) {
 		gc      []destroyable
 	)
 	defer func() {
-		for _, g := range gc {
-			g.Destroy()
+		for _, v := range gc {
+			v.Destroy()
 		}
 	}()
 	for {
@@ -165,8 +165,8 @@ func (g *GdalToolbox) GetGeoFromInlayShp(shp string) (rets []InlayShpGeo, err er
 		gc      []destroyable
 	)
 	defer func() {
-		for _, f := range gc {
-			f.Destroy()
+		for _, v := range gc {
+			v.Destroy()
 		}
 	}()
 	needTrans := srid != UNIVERSAL_SRID
@@ -230,8 +230,8 @@ func (g *GdalToolbox) getGeoFromScatteredShp(shp string) (mergedGeo gdal.Geometr
 		gc      []destroyable
 	)
 	defer func() {
-		for _, g := range gc {
-			g.Destroy()
+		for _, v := range gc {
+			v.Destroy()
 		}
 	}()
 	needTrans := srid != UNIVERSAL_SRID
