@@ -5,10 +5,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/google/uuid"
-	"github.com/lukeroth/gdal"
 	"github.com/wgdzlh/gdalib/log"
 	"github.com/wgdzlh/gdalib/utils"
+
+	gdal "github.com/airbusgeo/godal"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -17,35 +18,39 @@ const (
 	METEO_TIF_Y = 5211
 )
 
+type RasterBand struct {
+	gdal.Band
+	Dataset *Dataset
+}
+
 // 读取一般Tif
-func (g *GdalToolbox) ParseRaster(tif string, buf [][]byte) (err error) {
-	bands := len(buf) // 需要读取的波段数
-	sds, err := gdal.Open(tif, gdal.ReadOnly)
+func (g *GdalToolbox) ParseRaster(tif string, bands int) (buf [][]byte, dtSize int, err error) {
+	sds, err := gdal.Open(tif, gdal.RasterOnly())
 	if err != nil {
 		log.Error(g.logTag+"open tif failed", zap.Error(err))
 		err = ErrInvalidTif
 		return
 	}
 	defer sds.Close()
-	bc := sds.RasterCount()
+	tifBands := sds.Bands()
+	bc := len(tifBands)
 	if bc < bands {
 		log.Error(g.logTag+"tif bands not enough", zap.Int("bands", bc))
 		err = ErrWrongTif
 		return
 	}
 	log.Info(g.logTag+"start read tif", zap.Int("bands", bc), zap.Int("bufBn", bands))
-	for i := 1; i <= bands; i++ {
-		band := sds.RasterBand(i)
-		dt := band.RasterDataType()
-		x := band.XSize()
-		y := band.YSize()
-		if dt != gdal.Byte {
-			log.Error(g.logTag+"tif is malformed", zap.String("dataType", dt.Name()))
-			err = ErrWrongTif
-			return
-		}
+	buf = make([][]byte, bands)
+	for i := 0; i < bands; i++ {
+		band := tifBands[i]
+		bandStruct := band.Structure()
+		dt := bandStruct.DataType
+		x := bandStruct.SizeX
+		y := bandStruct.SizeY
 		log.Info(g.logTag+"read tif band", zap.Int("band", i), zap.Int("dt", int(dt)), zap.Int("width", x), zap.Int("height", y))
-		err = band.IO(gdal.Read, 0, 0, x, y, buf[i], x, y, 0, 0)
+		dtSize = dt.Size()
+		buf[i] = make([]byte, x*y*dtSize)
+		err = band.IO(gdal.IORead, 0, 0, buf[i], x, y)
 		if err != nil {
 			log.Error(g.logTag+"read tif band failed", zap.Int("band", i), zap.Error(err))
 			err = ErrTifReadFailed
@@ -61,29 +66,31 @@ func (g *GdalToolbox) ParseMeteoRaster(tif string, buf []int16) (err error) {
 		err = ErrWrongBufferSize
 		return
 	}
-	sds, err := gdal.Open(tif, gdal.ReadOnly)
+	sds, err := gdal.Open(tif, gdal.RasterOnly())
 	if err != nil {
 		log.Error(g.logTag+"open meteo tif failed", zap.Error(err))
 		err = ErrInvalidTif
 		return
 	}
 	defer sds.Close()
-	if bc := sds.RasterCount(); bc != 1 {
+	tifBands := sds.Bands()
+	if bc := len(tifBands); bc != 1 {
 		log.Error(g.logTag+"meteo tif can have only one band", zap.Int("bands", bc))
 		err = ErrWrongTif
 		return
 	}
-	band := sds.RasterBand(1)
-	dt := band.RasterDataType()
-	x := band.XSize()
-	y := band.YSize()
+	band := tifBands[0]
+	bandStruct := band.Structure()
+	dt := bandStruct.DataType
+	x := bandStruct.SizeX
+	y := bandStruct.SizeY
 	if dt != gdal.Int16 || x != METEO_TIF_X || y != METEO_TIF_Y {
-		log.Error(g.logTag+"meteo tif is malformed", zap.String("dataType", dt.Name()))
+		log.Error(g.logTag+"meteo tif is malformed", zap.String("dataType", dt.String()))
 		err = ErrWrongTif
 		return
 	}
 	log.Info(g.logTag+"read meteo tif", zap.Int("dt", int(dt)), zap.Int("width", x), zap.Int("height", y))
-	err = band.IO(gdal.Read, 0, 0, x, y, buf, x, y, 0, 0)
+	err = band.IO(gdal.IORead, 0, 0, buf, x, y)
 	if err != nil {
 		log.Error(g.logTag+"read meteo tif band failed", zap.Error(err))
 		err = ErrTifReadFailed
@@ -92,24 +99,26 @@ func (g *GdalToolbox) ParseMeteoRaster(tif string, buf []int16) (err error) {
 }
 
 // 获取气象Tif中的Band
-func (g *GdalToolbox) GetMeteoRasterBand(tif string) (band gdal.RasterBand, err error) {
-	sds, err := gdal.Open(tif, gdal.ReadOnly)
+func (g *GdalToolbox) GetMeteoRasterBand(tif string) (band RasterBand, err error) {
+	sds, err := gdal.Open(tif, gdal.RasterOnly())
 	if err != nil {
 		log.Error(g.logTag+"open meteo tif failed", zap.Error(err))
 		err = ErrInvalidTif
 		return
 	}
-	if bc := sds.RasterCount(); bc != 1 {
+	tifBands := sds.Bands()
+	if bc := len(tifBands); bc != 1 {
 		log.Error(g.logTag+"meteo tif can have only one band", zap.Int("bands", bc))
 		err = ErrWrongTif
 		return
 	}
-	band = sds.RasterBand(1)
-	dt := band.RasterDataType()
-	x := band.XSize()
-	y := band.YSize()
+	band.Band = tifBands[0]
+	bandStruct := band.Band.Structure()
+	dt := bandStruct.DataType
+	x := bandStruct.SizeX
+	y := bandStruct.SizeY
 	if dt != gdal.Int16 || x != METEO_TIF_X || y != METEO_TIF_Y {
-		log.Error(g.logTag+"meteo tif is malformed", zap.String("dataType", dt.Name()))
+		log.Error(g.logTag+"meteo tif is malformed", zap.String("dataType", dt.String()))
 		err = ErrWrongTif
 		return
 	}
@@ -117,13 +126,13 @@ func (g *GdalToolbox) GetMeteoRasterBand(tif string) (band gdal.RasterBand, err 
 	return
 }
 
-func (g *GdalToolbox) ReadMeteoRasterBandOffset(band gdal.RasterBand, xOff, yOff int) (ret int16, err error) {
+func (g *GdalToolbox) ReadMeteoRasterBandOffset(band RasterBand, xOff, yOff int) (ret int16, err error) {
 	if xOff >= METEO_TIF_X || yOff >= METEO_TIF_Y {
 		err = ErrWrongRasterOffset
 		return
 	}
 	buf := make([]int16, 1)
-	err = band.IO(gdal.Read, xOff, yOff, 1, 1, buf, 1, 1, 0, 0)
+	err = band.IO(gdal.IORead, xOff, yOff, buf, 1, 1)
 	if err != nil {
 		log.Error(g.logTag+"read meteo tif band offset failed", zap.Error(err))
 		err = ErrTifReadFailed
@@ -133,8 +142,10 @@ func (g *GdalToolbox) ReadMeteoRasterBandOffset(band gdal.RasterBand, xOff, yOff
 	return
 }
 
-func (g *GdalToolbox) CloseMeteoRasterBand(band gdal.RasterBand) {
-	band.GetDataset().Close()
+func (g *GdalToolbox) CloseMeteoRasterBand(band RasterBand) {
+	if band.Dataset != nil {
+		band.Dataset.Close()
+	}
 }
 
 // 按各自有效区WKT剪切，并按目标区域WKT镶嵌多张影像tif
@@ -153,22 +164,25 @@ func (g *GdalToolbox) CropRasters(tifWkt []ImgMergeFile, extWkt, out string) (er
 		return
 	}
 	var (
-		ext        gdal.Geometry
-		geo        gdal.Geometry
-		sds        gdal.Dataset
-		ods        gdal.Dataset
-		dss        []gdal.Dataset
+		ext        *Geometry
+		geo        *Geometry
+		sds        *Dataset
+		ods        *Dataset
 		part       string
 		parts      []string
 		opts       []string
-		trans      = gdal.CreateCoordinateTransform(ref, tRef)
+		geoJson    []byte
 		tmpGeoJson = filepath.Join(g.tmpDir, fmt.Sprintf(TMP_GEOJSON, uuid.NewString()))
 		tmpVrt     = out + "_tmp.vrt"
-		gc         = []destroyable{trans}
 	)
+	trans, err := gdal.NewTransform(ref, tRef)
+	if err != nil {
+		return
+	}
+	gc := []destroyable{trans}
 	defer func() {
 		for _, v := range gc {
-			v.Destroy()
+			v.Close()
 		}
 		os.Remove(tmpGeoJson)
 		for _, part := range parts {
@@ -192,7 +206,7 @@ func (g *GdalToolbox) CropRasters(tifWkt []ImgMergeFile, extWkt, out string) (er
 			return
 		}
 	}
-	hasExt := ext != emptyGeometry && !ext.IsEmpty()
+	hasExt := ext != nil && !ext.Empty()
 	for i := n_tif - 1; i >= 0; i-- {
 		t := tifWkt[i]
 		if geo, err = g.parseWKB(t.Wkb, ref); err != nil {
@@ -203,20 +217,27 @@ func (g *GdalToolbox) CropRasters(tifWkt []ImgMergeFile, extWkt, out string) (er
 			return
 		}
 		if hasExt {
-			geo = geo.Intersection(ext)
+			if geo, err = geo.Intersection(ext); err != nil {
+				return
+			}
 			gc = append(gc, geo)
-			ext = ext.Difference(geo)
+			if ext, err = ext.Difference(geo); err != nil {
+				return
+			}
 			gc = append(gc, ext)
 		}
 		gt := geo.Type()
-		if (gt != gdal.GT_MultiPolygon && gt != gdal.GT_Polygon) || geo.IsEmpty() {
+		if (gt != gdal.GTMultiPolygon && gt != gdal.GTPolygon) || geo.Empty() {
 			log.Info(g.logTag+"encounter empty cut line geo", zap.Int("idx", i), zap.String("img", t.Infile))
 			continue
 		}
-		if err = os.WriteFile(tmpGeoJson, utils.S2B(geo.ToJSON()), os.ModePerm); err != nil {
+		if geoJson, err = g.geoToGeoJSON(geo); err != nil {
 			return
 		}
-		sds, err = gdal.Open(t.Infile, gdal.ReadOnly)
+		if err = os.WriteFile(tmpGeoJson, geoJson, os.ModePerm); err != nil {
+			return
+		}
+		sds, err = gdal.Open(t.Infile, gdal.RasterOnly())
 		if err != nil {
 			return
 		}
@@ -230,30 +251,36 @@ func (g *GdalToolbox) CropRasters(tifWkt []ImgMergeFile, extWkt, out string) (er
 				opts = append(opts, []string{"-b", bands[0], "-b", bands[1], "-b", bands[2]}...)
 			}
 		}
-		ods, err = gdal.Warp(part, nil, []gdal.Dataset{sds}, opts) // 剪切影像
+		ods, err = gdal.Warp(part, []*Dataset{sds}, opts) // 剪切影像
 		sds.Close()
 		if err != nil {
 			log.Error(g.logTag+"failed to crop raster", zap.Error(err))
 			return
 		}
-		defer ods.Close()
+		ods.Close()
 		parts = append([]string{part}, parts...)
-		dss = append([]gdal.Dataset{ods}, dss...)
+		// dss = append([]*Dataset{ods}, dss...)
 	}
-	if len(dss) == 0 {
+	if len(parts) == 0 {
 		err = ErrEmptyTif
 		return
-	} else if len(dss) > 1 {
+	} else if len(parts) > 1 {
 		defer os.Remove(tmpVrt)
 		// 将各景影像剪切结果拼接成一个VRT
-		if ods, err = gdal.BuildVRT(tmpVrt, dss, parts, []string{"-resolution", "highest", "-overwrite"}); err != nil {
+		if ods, err = gdal.BuildVRT(tmpVrt, parts, []string{"-resolution", "highest", "-overwrite"}); err != nil {
 			log.Error(g.logTag+"failed to build vrt", zap.Error(err))
 			return
 		}
-		defer ods.Close()
+	} else {
+		ods, err = gdal.Open(parts[0], gdal.RasterOnly())
+		if err != nil {
+			log.Error(g.logTag+"open part tif failed", zap.Error(err))
+			return
+		}
 	}
+	defer ods.Close()
 	// 将VRT转为最终GTiff
-	finalDs, err := gdal.Translate(out, ods, []string{"-co", "compress=lzw"})
+	finalDs, err := ods.Translate(out, []string{"-co", "compress=lzw"})
 	if err != nil {
 		log.Error(g.logTag+"failed to translate vrt", zap.Error(err))
 		return

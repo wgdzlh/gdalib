@@ -7,7 +7,7 @@ import (
 	"github.com/wgdzlh/gdalib/log"
 	"github.com/wgdzlh/gdalib/utils"
 
-	"github.com/lukeroth/gdal"
+	gdal "github.com/airbusgeo/godal"
 	"go.uber.org/zap"
 )
 
@@ -18,7 +18,7 @@ func (g *GdalToolbox) parseShp(shp string, noTrans ...bool) (ret gdal.Geometry, 
 		err = ErrGdalDriverOpen
 		return
 	}
-	defer ds.Destroy()
+	defer ds.Close()
 	var (
 		layer    = ds.LayerByIndex(0)
 		mayTrans = len(noTrans) == 0 || !noTrans[0]
@@ -35,7 +35,7 @@ func (g *GdalToolbox) parseShp(shp string, noTrans ...bool) (ret gdal.Geometry, 
 	}
 	defer func() {
 		for _, v := range gc {
-			v.Destroy()
+			v.Close()
 		}
 	}()
 	ret = gdal.Create(gdal.GT_Polygon)
@@ -70,7 +70,7 @@ func (g *GdalToolbox) GetWkbFromShp(shp string) (ret GdalGeo, err error) {
 	if err != nil {
 		return
 	}
-	defer geo.Destroy()
+	defer geo.Close()
 	if !geo.IsEmpty() {
 		ret, err = geo.ToWKB()
 	}
@@ -85,7 +85,7 @@ func (g *GdalToolbox) GetWktFromShp(shp string) (ret string, err error) {
 	if err != nil {
 		return
 	}
-	defer geo.Destroy()
+	defer geo.Close()
 	if !geo.IsEmpty() {
 		ret, err = geo.ToWKT()
 	}
@@ -100,7 +100,7 @@ func (g *GdalToolbox) GetGeoJSONFromShp(shp string) (ret AnyJson, err error) {
 	if err != nil {
 		return
 	}
-	defer geo.Destroy()
+	defer geo.Close()
 	ret = utils.S2B(geo.ToJSON())
 	log.Info(g.logTag+"got GeoJSON from shp", zap.String("shp", shp), zap.Bool("succeed", !geo.IsEmpty()))
 	return
@@ -206,7 +206,7 @@ func (g *GdalToolbox) GetLabelsFromShapefile(shp, labelField string) (labels []s
 		err = ErrGdalDriverOpen
 		return
 	}
-	defer ds.Destroy()
+	defer ds.Close()
 	layer := ds.LayerByIndex(0)
 	labelIdx := layer.Definition().FieldIndex(labelField)
 	if labelIdx < 0 {
@@ -222,7 +222,7 @@ func (g *GdalToolbox) GetLabelsFromShapefile(shp, labelField string) (labels []s
 	)
 	defer func() {
 		for _, v := range gc {
-			v.Destroy()
+			v.Close()
 		}
 	}()
 	for {
@@ -254,7 +254,7 @@ func (g *GdalToolbox) ParseShapefile(shp, labelField string) (ret []Speckle, err
 		err = ErrGdalDriverOpen
 		return
 	}
-	defer ds.Destroy()
+	defer ds.Close()
 	layer := ds.LayerByIndex(0)
 	def := layer.Definition()
 	labelIdx := -1
@@ -275,7 +275,7 @@ func (g *GdalToolbox) ParseShapefile(shp, labelField string) (ret []Speckle, err
 	)
 	defer func() {
 		for _, v := range gc {
-			v.Destroy()
+			v.Close()
 		}
 	}()
 	for {
@@ -308,7 +308,7 @@ func (g *GdalToolbox) ParseShapefileToWkt(shp string) (ret []string, err error) 
 		err = ErrGdalDriverOpen
 		return
 	}
-	defer ds.Destroy()
+	defer ds.Close()
 	layer := ds.LayerByIndex(0)
 	ret = make([]string, 0, 128)
 	var (
@@ -320,7 +320,7 @@ func (g *GdalToolbox) ParseShapefileToWkt(shp string) (ret []string, err error) 
 	)
 	defer func() {
 		for _, v := range gc {
-			v.Destroy()
+			v.Close()
 		}
 	}()
 	for {
@@ -364,7 +364,7 @@ func (g *GdalToolbox) UpdateLabelInShapefile(shp, labelField, zone string, align
 		err = ErrGdalDriverOpen
 		return
 	}
-	defer ds.Destroy()
+	defer ds.Close()
 	layer := ds.LayerByIndex(0)
 	labelIdx := layer.Definition().FieldIndex(labelField)
 	if labelIdx < 0 {
@@ -379,7 +379,7 @@ func (g *GdalToolbox) UpdateLabelInShapefile(shp, labelField, zone string, align
 	)
 	defer func() {
 		for _, v := range gc {
-			v.Destroy()
+			v.Close()
 		}
 	}()
 	for {
@@ -436,7 +436,7 @@ func (g *GdalToolbox) WriteGeoToShapefile(shp string, srid int, gs ...GdalGeo) (
 	if err != nil {
 		return
 	}
-	defer ds.Destroy() // 生成shp文件 + 释放资源
+	defer ds.Close() // 生成shp文件 + 释放资源
 	var (
 		def     = layer.Definition()
 		feature gdal.Feature
@@ -468,7 +468,7 @@ func (g *GdalToolbox) WriteGeoToShapefile(shp string, srid int, gs ...GdalGeo) (
 		valid++
 	}
 	for _, v := range gc {
-		v.Destroy()
+		v.Close()
 	}
 	log.Info(g.logTag+"output geo to shapefile done", zap.String("shp", shp), zap.Int("total", len(gs)), zap.Int("valid", valid))
 	return
@@ -480,7 +480,7 @@ func (g *GdalToolbox) WriteShapefile(shp, labelField string, srid int, speckles 
 	if err != nil {
 		return
 	}
-	defer ds.Destroy() // 生成shp文件 + 释放资源
+	defer ds.Close() // 生成shp文件 + 释放资源
 	if labelField != "" {
 		if err = g.initShpLayer(layer, labelField); err != nil {
 			return
@@ -524,7 +524,7 @@ func (g *GdalToolbox) WriteShapefile(shp, labelField string, srid int, speckles 
 		cnt++
 	}
 	for _, v := range gc {
-		v.Destroy()
+		v.Close()
 	}
 	log.Info(g.logTag+"shp files created", zap.String("shp", shp), zap.Int("total", len(speckles)), zap.Int("valid", cnt))
 	return
@@ -536,7 +536,7 @@ func (g *GdalToolbox) WriteZoneShapefile(shp string, srid int, ucs ...Uncertaint
 	if err != nil {
 		return
 	}
-	defer ds.Destroy() // 生成shp文件 + 释放资源
+	defer ds.Close() // 生成shp文件 + 释放资源
 	objectOid := gdal.CreateFieldDefinition(SHP_FIELD_OID, gdal.FT_Integer)
 	if err = layer.CreateField(objectOid, false); err != nil {
 		return
@@ -573,7 +573,7 @@ func (g *GdalToolbox) WriteZoneShapefile(shp string, srid int, ucs ...Uncertaint
 		cnt++
 	}
 	for _, v := range gc {
-		v.Destroy()
+		v.Close()
 	}
 	log.Info(g.logTag+"zone shp files created", zap.String("shp", shp), zap.Int("total", len(ucs)), zap.Int("valid", cnt))
 	return
@@ -589,12 +589,12 @@ func (g *GdalToolbox) WriteMergedShapefile(shp string, uc Uncertainty) (err erro
 	if err != nil {
 		return
 	}
-	defer ucGeo.Destroy()
+	defer ucGeo.Close()
 	ds, tRef, layer, err := g.getShpDriver(shp, OUTPUT_SRID)
 	if err != nil {
 		return
 	}
-	defer ds.Destroy() // 生成shp文件 + 释放资源
+	defer ds.Close() // 生成shp文件 + 释放资源
 	if err = ucGeo.TransformTo(tRef); err != nil {
 		log.Error(g.logTag+"geo transform failed", zap.Error(err))
 		return
@@ -639,7 +639,7 @@ func (g *GdalToolbox) WriteMergedShapefile(shp string, uc Uncertainty) (err erro
 		cnt++
 	}
 	for _, v := range gc {
-		v.Destroy()
+		v.Close()
 	}
 	log.Info(g.logTag+"merged zone shp files created", zap.String("shp", shp), zap.Int("total", len(polygons)), zap.Int("valid", cnt))
 	return

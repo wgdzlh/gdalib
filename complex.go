@@ -2,12 +2,11 @@ package gdalib
 
 import (
 	"github.com/wgdzlh/gdalib/log"
-	"github.com/wgdzlh/gdalib/utils"
 
-	"github.com/lukeroth/gdal"
 	"go.uber.org/zap"
 )
 
+/*
 // 拆分、凸包+缓冲、合并目标区域WKB，输出GeoJSON
 func (g *GdalToolbox) ProcessZoneMerge(uc *Uncertainty, dis int) (ret AnyJson, err error) {
 	log.Info(g.logTag+"start process zone merge", zap.Int("ucSize", len(uc.Geom)), zap.Int("id", uc.Id), zap.Int("dis", dis))
@@ -19,54 +18,76 @@ func (g *GdalToolbox) ProcessZoneMerge(uc *Uncertainty, dis int) (ret AnyJson, e
 	if err != nil {
 		return
 	}
-	defer mergedSg.Destroy()
+	defer mergedSg.Close()
 	mergeDis := MergeBufferDistance
 	if dis > 0 {
 		mergeDis = float64(dis) * MergeBufferMeter
 	}
 	// 缓冲 + 合并
-	unionGeo := g.splitAndHullBuff(mergedSg, mergeDis)
-	defer unionGeo.Destroy()
+	unionGeo, err := g.splitAndHullBuff(mergedSg, mergeDis)
+	if err != nil {
+		return
+	}
+	defer unionGeo.Close()
 	// 再次拆分 + 凸包
-	ucGeo := g.splitAndHullBuff(unionGeo)
-	defer ucGeo.Destroy()
-	ret = utils.S2B(ucGeo.ToJSON())
-	log.Info(g.logTag+"output merge json", zap.Int("id", uc.Id), zap.Int("dis", dis))
+	ucGeo, err := g.splitAndHullBuff(unionGeo)
+	if err != nil {
+		return
+	}
+	defer ucGeo.Close()
+	ret, err = g.geoToGeoJSON(ucGeo)
+	log.Info(g.logTag+"output merge json", zap.Int("id", uc.Id), zap.Int("dis", dis), zap.Error(err))
 	return
 }
 
-func (g *GdalToolbox) splitAndHullBuff(geo gdal.Geometry, dis ...float64) (rGeo gdal.Geometry) {
-	var gc []destroyable
-	if geo.Type() == gdal.GT_Polygon {
+func (g *GdalToolbox) splitAndHullBuff(geo *Geometry, dis ...float64) (rGeo *Geometry, err error) {
+	var (
+		gc     []destroyable
+		subGeo *Geometry
+	)
+	defer func() {
+		for _, v := range gc {
+			v.Close()
+		}
+	}()
+	if geo.Type() == gdal.GTPolygon {
 		rGeo = geo.ConvexHull()
 		gc = append(gc, rGeo)
 		if len(dis) > 0 {
-			rGeo = rGeo.Buffer(dis[0], MergeBufferSegs)
+			if rGeo, err = rGeo.Buffer(dis[0], MergeBufferSegs); err != nil {
+				return
+			}
 		}
 	} else {
-		rGeo = gdal.Create(gdal.GT_Polygon)
+		if rGeo, err = g.GetEmptyPolygon(geo.SpatialRef()); err != nil {
+			return
+		}
 		geoCount := geo.GeometryCount()
 		for i := 0; i < geoCount; i++ {
-			subGeo := geo.Geometry(i)
-			if subGeo.Type() != gdal.GT_Polygon {
+			if subGeo, err = geo.SubGeometry(i); err != nil {
+				return
+			}
+			if subGeo.Type() != gdal.GTPolygon {
 				log.Error(g.logTag+"wrong type in geom", zap.Uint("type", uint(subGeo.Type())))
 				continue
 			}
 			subGeo = subGeo.ConvexHull()
 			gc = append(gc, subGeo)
 			if len(dis) > 0 {
-				subGeo = subGeo.Buffer(dis[0], MergeBufferSegs)
+				if subGeo, err = subGeo.Buffer(dis[0], MergeBufferSegs); err != nil {
+					return
+				}
 				gc = append(gc, subGeo)
 			}
 			gc = append(gc, rGeo)
-			rGeo = rGeo.Union(subGeo)
+			if rGeo, err = rGeo.Union(subGeo); err != nil {
+				return
+			}
 		}
-	}
-	for _, v := range gc {
-		v.Destroy()
 	}
 	return
 }
+*/
 
 // 获取多个影像范围WKB分别在目标区域中的覆盖率及目标区域、影像范围、未覆盖区域的GeoJSON
 func (g *GdalToolbox) GetAreaCoverage(districtGeom GdalGeo, imagesGeom []GdalGeo) (ratios []float32, dst AnyJson, unions, diffs []AnyJson, err error) {
@@ -82,14 +103,16 @@ func (g *GdalToolbox) GetAreaCoverage(districtGeom GdalGeo, imagesGeom []GdalGeo
 	// if district.SpatialReference().EPSGTreatsAsLatLong() { // 如果经纬度顺序不对，则通过和空的多边形合并来调换（废弃，见getSridRef函数）
 	// 	district = gdal.Create(gdal.GT_Polygon).Union(district)
 	// }
-	dst = utils.S2B(district.ToJSON())
+	if dst, err = g.geoToGeoJSON(district); err != nil {
+		return
+	}
 	n := len(imagesGeom)
 	ratios = make([]float32, n)
 	unions = make([]AnyJson, n)
 	diffs = make([]AnyJson, n)
 	var (
-		unionGeo     gdal.Geometry
-		geo          gdal.Geometry
+		unionGeo     *Geometry
+		geo          *Geometry
 		ratio        float32
 		interArea    float64
 		districtArea = district.Area()
@@ -97,7 +120,7 @@ func (g *GdalToolbox) GetAreaCoverage(districtGeom GdalGeo, imagesGeom []GdalGeo
 	)
 	defer func() {
 		for _, v := range gc {
-			v.Destroy()
+			v.Close()
 		}
 	}()
 	for i, imgGeom := range imagesGeom {
@@ -110,17 +133,23 @@ func (g *GdalToolbox) GetAreaCoverage(districtGeom GdalGeo, imagesGeom []GdalGeo
 		// 	unionGeo = unionGeo.Union(subGeo)
 		// }
 		// 计算覆盖率
-		geo = district.Intersection(unionGeo)
+		if geo, err = district.Intersection(unionGeo); err != nil {
+			return
+		}
 		interArea = geo.Area()
 		gc = append(gc, geo)
 		ratio = float32(interArea / districtArea)
 		ratios[i] = ratio
 		// 影像范围合集
-		unions[i] = utils.S2B(unionGeo.ToJSON())
+		unions[i], err = g.geoToGeoJSON(unionGeo)
 		if ratio < CoverageThreshold {
 			// 地区与影像范围差集
-			geo = district.Difference(unionGeo)
-			diffs[i] = utils.S2B(geo.ToJSON())
+			if geo, err = district.Difference(unionGeo); err != nil {
+				return
+			}
+			if diffs[i], err = g.geoToGeoJSON(geo); err != nil {
+				return
+			}
 			gc = append(gc, geo)
 		}
 	}
@@ -139,27 +168,32 @@ func (g *GdalToolbox) GetAreaCoverageRatio(districtWkt string, imagesWkt []strin
 	if err != nil {
 		return
 	}
-	var (
-		unionGeo = gdal.Create(gdal.GT_Polygon)
-		subGeo   gdal.Geometry
-		gc       = []destroyable{district, unionGeo}
-	)
+	unionGeo, err := g.GetEmptyPolygon(ref)
+	if err != nil {
+		return
+	}
+	gc := []destroyable{district, unionGeo}
 	defer func() {
 		for _, v := range gc {
-			v.Destroy()
+			v.Close()
 		}
 	}()
+	var subGeo *Geometry
 	for _, gs := range imagesWkt {
 		if subGeo, err = g.parseWKT(gs, ref); err != nil {
 			return
 		}
-		unionGeo = unionGeo.Union(subGeo)
+		if unionGeo, err = unionGeo.Union(subGeo); err != nil {
+			return
+		}
 		gc = append(gc, subGeo)
 		gc = append(gc, unionGeo)
 	}
 	// 计算覆盖率
 	districtArea := district.Area()
-	unionGeo = district.Intersection(unionGeo)
+	if unionGeo, err = district.Intersection(unionGeo); err != nil {
+		return
+	}
 	interArea := unionGeo.Area()
 	gc = append(gc, unionGeo)
 	ratio = float32(interArea / districtArea)

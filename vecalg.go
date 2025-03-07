@@ -6,7 +6,7 @@ import (
 
 	"github.com/wgdzlh/gdalib/log"
 
-	"github.com/lukeroth/gdal"
+	gdal "github.com/airbusgeo/godal"
 	"go.uber.org/zap"
 )
 
@@ -18,7 +18,7 @@ const (
 	BuffQuadSegs        = 12
 )
 
-func (g *GdalToolbox) parseAlgWKT(wkt string) (ret gdal.Geometry, err error) {
+func (g *GdalToolbox) parseAlgWKT(wkt string) (ret *Geometry, err error) {
 	ref, err := g.getSridRef(WKT_ALG_SRID)
 	if err != nil {
 		return
@@ -31,15 +31,15 @@ func (g *GdalToolbox) parseAlgWKT(wkt string) (ret gdal.Geometry, err error) {
 	return
 }
 
-func (g *GdalToolbox) simpGeo(geo gdal.Geometry, t float64) (wkt string, err error) {
-	defer geo.Destroy()
+func (g *GdalToolbox) simpGeo(geo *Geometry, t float64) (wkt string, err error) {
+	defer geo.Close()
 	// t := config.C.Server.GeoSimplifyT
 	if t <= 0 {
 		t = SimplifyT
 	}
 	log.Info(g.logTag+"simplify geo", zap.Float64("tolerance", t))
 	ret := geo.SimplifyPreservingTopology(t)
-	defer ret.Destroy()
+	defer ret.Close()
 	area := ret.Area()
 	if area <= 0 {
 		return
@@ -51,14 +51,14 @@ func (g *GdalToolbox) simpGeo(geo gdal.Geometry, t float64) (wkt string, err err
 	return
 }
 
-func (g *GdalToolbox) muffGeo(geo gdal.Geometry) (ret gdal.Geometry, err error) {
+func (g *GdalToolbox) muffGeo(geo *Geometry) (ret *Geometry, err error) {
 	switch geo.Type() {
 	case gdal.GT_Polygon:
 		err = removeHolesInPolygon(geo)
 		ret = geo.Clone()
 	case gdal.GT_MultiPolygon:
 		// ret = gdal.Create(gdal.GT_MultiPolygon)
-		var subGeo gdal.Geometry
+		var subGeo *Geometry
 		gNum := geo.GeometryCount()
 		for i := 0; i < gNum; i++ {
 			subGeo = geo.Geometry(i)
@@ -96,7 +96,7 @@ func (g *GdalToolbox) MuffAndSimp(wkt string, t float64) (out string, err error)
 	if err != nil {
 		return
 	}
-	defer geo.Destroy()
+	defer geo.Close()
 	if geo, err = g.muffGeo(geo); err != nil {
 		return
 	}
@@ -104,16 +104,16 @@ func (g *GdalToolbox) MuffAndSimp(wkt string, t float64) (out string, err error)
 	return
 }
 
-func (g *GdalToolbox) parseAndCheck(wkt, line string) (geo, st gdal.Geometry, np int, err error) {
+func (g *GdalToolbox) parseAndCheck(wkt, line string) (geo, st *Geometry, np int, err error) {
 	st, err = g.parseAlgWKT(line)
 	if err != nil {
 		return
 	}
 	defer func() {
 		if err != nil {
-			st.Destroy()
+			st.Close()
 			if geo != emptyGeometry {
-				geo.Destroy()
+				geo.Close()
 			}
 		}
 	}()
@@ -144,20 +144,20 @@ func (g *GdalToolbox) Cut(wkt, line string) (out []string, err error) {
 	if err != nil {
 		return
 	}
-	defer geo.Destroy()
-	defer st.Destroy()
+	defer geo.Close()
+	defer st.Close()
 
 	if !geo.Intersects(st) {
 		out = []string{wkt}
 		return
 	}
 	buffedLine := st.Buffer(CutLineBuffDist, 1)
-	defer buffedLine.Destroy()
+	defer buffedLine.Close()
 
 	switch geo.Type() {
 	case gdal.GT_Polygon:
 		geo = geo.Difference(buffedLine)
-		defer geo.Destroy()
+		defer geo.Close()
 
 		switch geo.Type() {
 		case gdal.GT_Polygon:
@@ -175,10 +175,10 @@ func (g *GdalToolbox) Cut(wkt, line string) (out []string, err error) {
 		}
 	case gdal.GT_MultiPolygon:
 		excluded := gdal.Create(gdal.GT_MultiPolygon)
-		defer excluded.Destroy()
+		defer excluded.Close()
 
 		ng := geo.GeometryCount()
-		var subGeo gdal.Geometry
+		var subGeo *Geometry
 		for i := 0; i < ng; {
 			subGeo = geo.Geometry(i)
 			if subGeo.Intersects(st) {
@@ -197,7 +197,7 @@ func (g *GdalToolbox) Cut(wkt, line string) (out []string, err error) {
 			geo = geo.Geometry(0)
 		}
 		excluded = excluded.Difference(buffedLine)
-		defer excluded.Destroy()
+		defer excluded.Close()
 
 		switch excluded.Type() {
 		case gdal.GT_Polygon:
@@ -232,27 +232,27 @@ func (g *GdalToolbox) Reshape(wkt, line string) (out string, err error) {
 	if err != nil {
 		return
 	}
-	defer geo.Destroy()
-	defer st.Destroy()
+	defer geo.Close()
+	defer st.Close()
 
 	if !geo.Intersects(st) {
 		if np == 2 {
 			out = wkt
 		} else {
-			var subRegion gdal.Geometry
+			var subRegion *Geometry
 			if subRegion, err = buildPolygon(st, np); err != nil {
 				return
 			}
-			defer subRegion.Destroy()
+			defer subRegion.Close()
 			geo = geo.Difference(subRegion)
-			defer geo.Destroy()
+			defer geo.Close()
 			out, err = geo.ToWKT()
 		}
 		return
 	}
 
 	ends := st.Boundary()
-	defer ends.Destroy()
+	defer ends.Close()
 
 	if ends.GeometryCount() != 2 {
 		err = ErrWrongLineEndsCount
@@ -260,11 +260,11 @@ func (g *GdalToolbox) Reshape(wkt, line string) (out string, err error) {
 	}
 	// log.Info(g.logTag+"ends within st", zap.Bool("ret", ends.Intersects(st)))
 	buffedLine := st.Buffer(CutLineBuffDist, 1)
-	defer buffedLine.Destroy()
+	defer buffedLine.Close()
 
 	if geo.Intersects(ends.Geometry(0)) && geo.Intersects(ends.Geometry(1)) {
 		geo = geo.Union(buffedLine)
-		defer geo.Destroy()
+		defer geo.Close()
 		if geo, err = g.muffGeo(geo); err != nil {
 			return
 		}
@@ -275,11 +275,11 @@ func (g *GdalToolbox) Reshape(wkt, line string) (out string, err error) {
 				return
 			}
 		} else {
-			var trimRegion gdal.Geometry
+			var trimRegion *Geometry
 			if trimRegion, err = buildPolygon(st, np); err != nil {
 				return
 			}
-			defer trimRegion.Destroy()
+			defer trimRegion.Close()
 			if trimRegion.IsSimple() {
 				geo = geo.Difference(buffedLine)
 				if geo.Type() == gdal.GT_MultiPolygon {
@@ -287,7 +287,7 @@ func (g *GdalToolbox) Reshape(wkt, line string) (out string, err error) {
 					for i := 0; i < ng; {
 						if trimRegion.Intersects(geo.Geometry(i)) {
 							if err = geo.RemoveGeometry(i, true); err != nil {
-								geo.Destroy()
+								geo.Close()
 								return
 							}
 							ng--
@@ -315,8 +315,8 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 	if err != nil {
 		return
 	}
-	defer geo.Destroy()
-	defer st.Destroy()
+	defer geo.Close()
+	defer st.Close()
 
 	if st.Distance(geo) >= MinIntersectDist {
 		out = wkt
@@ -324,32 +324,32 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 	}
 
 	shrink := geo.Buffer(-MinIntersectDist, 1)
-	defer shrink.Destroy()
+	defer shrink.Close()
 
 	if shrink.Contains(st) {
 		if np == 2 {
 			out = wkt
 			return
 		}
-		var subRegion gdal.Geometry
+		var subRegion *Geometry
 		if subRegion, err = buildPolygon(st, np); err != nil {
 			return
 		}
-		defer subRegion.Destroy()
+		defer subRegion.Close()
 		out, err = simplifyMultiPolygon2(geo.Difference(subRegion))
 		return
 	}
 
 	expand := geo.Buffer(MinIntersectDist, 1)
 	ends := st.Boundary()
-	defer expand.Destroy()
-	defer ends.Destroy()
+	defer expand.Close()
+	defer ends.Close()
 
 	crossed := shrink.Intersects(st)
 	if crossed && shrink.Disjoint(ends) {
 		// 获取需要填充的线段集合
 		lineParts := st.Difference(expand)
-		defer lineParts.Destroy()
+		defer lineParts.Close()
 		if lineParts.Type() == gdal.GT_MultiLineString {
 			ng := lineParts.GeometryCount()
 			for i := 0; i < ng; {
@@ -371,9 +371,9 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 		if lineParts != emptyGeometry && !lineParts.IsEmpty() {
 			// wkt, _ := lineParts.ToWKT()
 			// log.Info("line parts", zap.String("t", wkt))
-			defer geo.Destroy()
+			defer geo.Close()
 			if geo, err = muffWithLine(geo, lineParts); err != nil {
-				geo.Destroy()
+				geo.Close()
 				return
 			}
 		}
@@ -382,10 +382,10 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 			if geo, err = cropWithLine(geo, st); err != nil {
 				return
 			}
-			defer geo.Destroy()
+			defer geo.Close()
 		}
 		if geo, err = muffWithLine(geo, st); err != nil {
-			geo.Destroy()
+			geo.Close()
 			return
 		}
 	} else {
@@ -396,14 +396,14 @@ func (g *GdalToolbox) Reshape2(wkt, line string) (out string, err error) {
 	return
 }
 
-func cropWithLine(geo, st gdal.Geometry) (ret gdal.Geometry, err error) {
+func cropWithLine(geo, st *Geometry) (ret *Geometry, err error) {
 	buffedLine := st.Buffer(MinIntersectDist, 1)
 	ret, err = removeSmallerPolygons(geo, buffedLine)
-	buffedLine.Destroy()
+	buffedLine.Close()
 	return
 }
 
-func muffWithLine(geo, st gdal.Geometry) (ret gdal.Geometry, err error) {
+func muffWithLine(geo, st *Geometry) (ret *Geometry, err error) {
 	buffedLine := st.Buffer(CutLineBuffDist, 1)
 	ret = geo.Union(buffedLine)
 	if ret.Type() == gdal.GT_Polygon {
@@ -411,15 +411,15 @@ func muffWithLine(geo, st gdal.Geometry) (ret gdal.Geometry, err error) {
 	} else {
 		err = ErrGdalWrongGeoType
 	}
-	buffedLine.Destroy()
+	buffedLine.Close()
 	return
 }
 
-func removeSmallerPolygons(geo, line gdal.Geometry) (ret gdal.Geometry, err error) {
+func removeSmallerPolygons(geo, line *Geometry) (ret *Geometry, err error) {
 	var (
-		subGeo  gdal.Geometry
+		subGeo  *Geometry
 		subGNum int
-		ssGeo   gdal.Geometry
+		ssGeo   *Geometry
 	)
 	switch geo.Type() {
 	case gdal.GT_Polygon:
@@ -436,7 +436,7 @@ func removeSmallerPolygons(geo, line gdal.Geometry) (ret gdal.Geometry, err erro
 			}
 		}
 		ret = ssGeo.Clone()
-		subGeo.Destroy()
+		subGeo.Close()
 	case gdal.GT_MultiPolygon:
 		ret = gdal.Create(gdal.GT_MultiPolygon)
 		gNum := geo.GeometryCount()
@@ -445,12 +445,12 @@ func removeSmallerPolygons(geo, line gdal.Geometry) (ret gdal.Geometry, err erro
 			switch subGeo.Type() {
 			case gdal.GT_Polygon:
 				if err = ret.AddGeometryDirectly(subGeo); err != nil {
-					subGeo.Destroy()
-					ret.Destroy()
+					subGeo.Close()
+					ret.Close()
 					return
 				}
 			case gdal.GT_MultiPolygon:
-				defer subGeo.Destroy()
+				defer subGeo.Close()
 				subGNum = subGeo.GeometryCount()
 				if subGNum == 0 {
 					continue
@@ -462,7 +462,7 @@ func removeSmallerPolygons(geo, line gdal.Geometry) (ret gdal.Geometry, err erro
 					}
 				}
 				if err = ret.AddGeometryDirectly(ssGeo); err != nil {
-					ret.Destroy()
+					ret.Close()
 					return
 				}
 			}
@@ -475,13 +475,13 @@ func removeSmallerPolygons(geo, line gdal.Geometry) (ret gdal.Geometry, err erro
 // 	return math.Abs(x2-x1) + math.Abs(y2-y1)
 // }
 
-func simplifyMultiPolygon(geo gdal.Geometry) (wkt string, err error) {
-	defer geo.Destroy()
+func simplifyMultiPolygon(geo *Geometry) (wkt string, err error) {
+	defer geo.Close()
 	if geo.Type() == gdal.GT_MultiPolygon {
 		switch geo.GeometryCount() {
 		case 0:
 			geo = gdal.Create(gdal.GT_Polygon)
-			defer geo.Destroy()
+			defer geo.Close()
 		case 1:
 			geo = geo.Geometry(0)
 		}
@@ -490,13 +490,13 @@ func simplifyMultiPolygon(geo gdal.Geometry) (wkt string, err error) {
 	return
 }
 
-func simplifyMultiPolygon2(geo gdal.Geometry) (wkt string, err error) {
-	defer geo.Destroy()
+func simplifyMultiPolygon2(geo *Geometry) (wkt string, err error) {
+	defer geo.Close()
 	if geo.Type() == gdal.GT_MultiPolygon {
 		switch geo.GeometryCount() {
 		case 0:
 			geo = gdal.Create(gdal.GT_Polygon)
-			defer geo.Destroy()
+			defer geo.Close()
 		default:
 			geo = geo.Geometry(0)
 		}
@@ -505,7 +505,7 @@ func simplifyMultiPolygon2(geo gdal.Geometry) (wkt string, err error) {
 	return
 }
 
-func buildPolygon(line gdal.Geometry, np int) (ret gdal.Geometry, err error) {
+func buildPolygon(line *Geometry, np int) (ret *Geometry, err error) {
 	var (
 		x, y float64
 		ring = gdal.Create(gdal.GT_LinearRing)
@@ -520,13 +520,13 @@ func buildPolygon(line gdal.Geometry, np int) (ret gdal.Geometry, err error) {
 	}
 	ret = gdal.Create(gdal.GT_Polygon)
 	if err = ret.AddGeometryDirectly(ring); err != nil {
-		ring.Destroy()
-		ret.Destroy()
+		ring.Close()
+		ret.Close()
 	}
 	return
 }
 
-func removeHolesInPolygon(geo gdal.Geometry) (err error) {
+func removeHolesInPolygon(geo *Geometry) (err error) {
 	gNum := geo.GeometryCount()
 	// if gNum <= 1 {
 	// 	ret = geo
@@ -556,14 +556,14 @@ func removeHolesInPolygon(geo gdal.Geometry) (err error) {
 	return
 }
 
-func removeConcatHolesInPolygon(geo, line gdal.Geometry) (err error) {
+func removeConcatHolesInPolygon(geo, line *Geometry) (err error) {
 	var (
-		tmp gdal.Geometry
+		tmp *Geometry
 		gc  []destroyable
 	)
 	defer func() {
 		for _, v := range gc {
-			v.Destroy()
+			v.Close()
 		}
 	}()
 	ng := geo.GeometryCount()
@@ -585,7 +585,7 @@ func removeConcatHolesInPolygon(geo, line gdal.Geometry) (err error) {
 	return
 }
 
-// func transClosedLineToRing(geo gdal.Geometry) (ret gdal.Geometry) {
+// func transClosedLineToRing(geo *Geometry) (ret *Geometry) {
 // 	ret = gdal.Create(gdal.GT_LinearRing)
 // 	np := geo.PointCount()
 // 	var x, y float64

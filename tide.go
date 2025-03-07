@@ -3,9 +3,10 @@ package gdalib
 import (
 	"fmt"
 
-	"github.com/lukeroth/gdal"
 	"github.com/wgdzlh/gdalib/log"
 	"github.com/wgdzlh/gdalib/utils"
+
+	gdal "github.com/airbusgeo/godal"
 	"go.uber.org/zap"
 )
 
@@ -22,7 +23,7 @@ func (g *GdalToolbox) ParseTideSiteShp(shp string) (ret []TideSpeckle, err error
 		err = ErrGdalDriverOpen
 		return
 	}
-	defer ds.Destroy()
+	defer ds.Close()
 	layer := ds.LayerByIndex(0)
 	def := layer.Definition()
 	idIdx := def.FieldIndex(SHP_FIELD_SID)
@@ -47,13 +48,13 @@ func (g *GdalToolbox) ParseTideSiteShp(shp string) (ret []TideSpeckle, err error
 	)
 	defer func() {
 		for _, v := range gc {
-			v.Destroy()
+			v.Close()
 		}
 	}()
 	for {
 		if feature = layer.NextFeature(); feature != nil {
 			gc = append(gc, *feature)
-			wkb, e = feature.Geometry().ToWKB()
+			wkb, e = feature.Geometry().WKB()
 			if len(wkb) < 3 || e != nil {
 				log.Error(g.logTag+"err in wkb trans", zap.Int64("fid", feature.FID()), zap.Error(e))
 				continue
@@ -89,7 +90,7 @@ func (g *GdalToolbox) ParseTideSpanShp(shp string) (ret []TideSpan, err error) {
 		err = ErrGdalDriverOpen
 		return
 	}
-	defer ds.Destroy()
+	defer ds.Close()
 	layer := ds.LayerByIndex(0)
 	def := layer.Definition()
 	idIdx := def.FieldIndex(SHP_FIELD_ID)
@@ -107,13 +108,13 @@ func (g *GdalToolbox) ParseTideSpanShp(shp string) (ret []TideSpan, err error) {
 	)
 	defer func() {
 		for _, v := range gc {
-			v.Destroy()
+			v.Close()
 		}
 	}()
 	for {
 		if feature = layer.NextFeature(); feature != nil {
 			gc = append(gc, *feature)
-			wkt, e = feature.Geometry().ToWKT()
+			wkt, e = feature.Geometry().WKT()
 			if e != nil {
 				log.Error(g.logTag+"err in wkt trans", zap.Int64("fid", feature.FID()), zap.Error(e))
 				continue
@@ -142,7 +143,7 @@ func (g *GdalToolbox) GetGeoFromInlayShp(shp string) (rets []InlayShpGeo, err er
 		err = ErrGdalDriverOpen
 		return
 	}
-	defer ds.Destroy()
+	defer ds.Close()
 	var (
 		layer = ds.LayerByIndex(0)
 		trans gdal.CoordinateTransform
@@ -161,12 +162,12 @@ func (g *GdalToolbox) GetGeoFromInlayShp(shp string) (rets []InlayShpGeo, err er
 		feature *gdal.Feature
 		wkb     []byte
 		tif     string
-		geo     gdal.Geometry
+		geo     *Geometry
 		gc      []destroyable
 	)
 	defer func() {
 		for _, v := range gc {
-			v.Destroy()
+			v.Close()
 		}
 	}()
 	needTrans := srid != UNIVERSAL_SRID
@@ -187,7 +188,7 @@ func (g *GdalToolbox) GetGeoFromInlayShp(shp string) (rets []InlayShpGeo, err er
 					return
 				}
 			}
-			if wkb, err = geo.ToWKB(); err != nil {
+			if wkb, err = geo.WKB(); err != nil {
 				return
 			}
 			if tif = feature.FieldAsString(tifIdx); tif == "" {
@@ -206,7 +207,7 @@ func (g *GdalToolbox) GetGeoFromInlayShp(shp string) (rets []InlayShpGeo, err er
 	return
 }
 
-func (g *GdalToolbox) getGeoFromScatteredShp(shp string) (mergedGeo gdal.Geometry, srid, pCnt int, err error) {
+func (g *GdalToolbox) getGeoFromScatteredShp(shp string) (mergedGeo *Geometry, srid, pCnt int, err error) {
 	mergedGeo = gdal.Create(gdal.GT_MultiPolygon)
 	driver := gdal.OGRDriverByName(SHP_DRIVER_NAME)
 	ds, ok := driver.Open(shp, 0)
@@ -214,10 +215,10 @@ func (g *GdalToolbox) getGeoFromScatteredShp(shp string) (mergedGeo gdal.Geometr
 		err = ErrGdalDriverOpen
 		return
 	}
-	defer ds.Destroy()
+	defer ds.Close()
 	var (
 		layer = ds.LayerByIndex(0)
-		trans gdal.CoordinateTransform
+		trans *gdal.Transform
 	)
 	sRef := layer.SpatialReference()
 	srid, err = g.getSrid(sRef)
@@ -226,12 +227,12 @@ func (g *GdalToolbox) getGeoFromScatteredShp(shp string) (mergedGeo gdal.Geometr
 	}
 	var (
 		feature *gdal.Feature
-		geo     gdal.Geometry
+		geo     *Geometry
 		gc      []destroyable
 	)
 	defer func() {
 		for _, v := range gc {
-			v.Destroy()
+			v.Close()
 		}
 	}()
 	needTrans := srid != UNIVERSAL_SRID
@@ -268,17 +269,10 @@ func (g *GdalToolbox) getGeoFromScatteredShp(shp string) (mergedGeo gdal.Geometr
 					}
 				}
 			}
-			geo.Destroy()
+			geo.Close()
 		} else {
 			break
 		}
-	}
-	pCnt = mergedGeo.GeometryCount()
-	if pCnt == 1 {
-		geo = mergedGeo.Geometry(0)
-		mergedGeo.RemoveGeometry(0, false)
-		mergedGeo.Destroy()
-		mergedGeo = geo
 	}
 	return
 }
@@ -297,9 +291,9 @@ func (g *GdalToolbox) GetWktFromScatteredShp(shp string) (ret string, err error)
 	log.Info(g.logTag+"start shp wkt trans", zap.String("shp", shp))
 	mg, srid, pCnt, err := g.getGeoFromScatteredShp(shp)
 	if pCnt > 0 {
-		ret, err = mg.ToWKT()
+		ret, err = mg.WKT()
 	}
-	mg.Destroy()
+	mg.Close()
 	log.Info(g.logTag+"got wkt from shp", zap.String("shp", shp), zap.Int("srid", srid), zap.Int("cnt", pCnt), zap.Error(err))
 	return
 }
@@ -308,9 +302,9 @@ func (g *GdalToolbox) GetWkbFromScatteredShp(shp string) (ret []byte, err error)
 	log.Info(g.logTag+"start shp wkb trans", zap.String("shp", shp))
 	mg, srid, pCnt, err := g.getGeoFromScatteredShp(shp)
 	if pCnt > 0 {
-		ret, err = mg.ToWKB()
+		ret, err = mg.WKB()
 	}
-	mg.Destroy()
+	mg.Close()
 	log.Info(g.logTag+"got wkb from shp", zap.String("shp", shp), zap.Int("srid", srid), zap.Int("cnt", pCnt), zap.Error(err))
 	return
 }

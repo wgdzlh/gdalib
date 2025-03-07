@@ -4,8 +4,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/lukeroth/gdal"
 )
 
 func TestReadMeteoTif(t *testing.T) {
@@ -51,11 +49,13 @@ func TestSpan(t *testing.T) {
 }
 
 func TestEmpty(t *testing.T) {
-	geo := gdal.Create(gdal.GT_MultiPolygon)
-	wkt, _ := geo.ToWKT()
+	g := NewGdalToolbox()
+	ref, _ := g.getSridRef(UNIVERSAL_SRID)
+	geo, _ := g.GetEmptyMultiPolygon(ref)
+	wkt, _ := geo.WKT()
 	t.Log(wkt, strings.HasSuffix(wkt, "EMPTY"))
-	geo = gdal.Create(gdal.GT_Polygon)
-	wkt, _ = geo.ToWKT()
+	geo, _ = g.GetEmptyPolygon(ref)
+	wkt, _ = geo.WKT()
 	t.Log(wkt, strings.HasSuffix(wkt, "EMPTY"))
 }
 
@@ -75,15 +75,15 @@ func TestReshape2(t *testing.T) {
 	gs1, _ := g.parseAlgWKT("POLYGON((0 0,0 2,2 2,2 0,0 0))")
 	gs2, _ := g.parseAlgWKT("MULTIPOLYGON(((0 0,0 2,2 2,2 0,0 0)),((0 0,0 3,3 3,3 0,0 0)),((0 0,0 3,3 3,3 0,0 0)))")
 	ret, err := MergeMultiPolygons(gs1, gs2)
-	out, _ = ret.ToWKT()
+	out, _ = ret.WKT()
 	t.Log(err, out)
 
-	ret2 := ret.UnionCascaded()
-	out, _ = ret2.ToWKT()
+	ret2, _ := ret.Union(ret)
+	out, _ = ret2.WKT()
 	t.Log(out)
 
-	ret.Destroy()
-	ret2.Destroy()
+	ret.Close()
+	ret2.Close()
 
 	time.Sleep(time.Second)
 	t.Log("all done")

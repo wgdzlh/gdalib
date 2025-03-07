@@ -4,6 +4,7 @@ import "errors"
 
 var (
 	ErrGdalDriverCreate    = errors.New("gdal driver create err")
+	ErrGdalDriverNotExist  = errors.New("gdal driver not exist err")
 	ErrGdalDriverOpen      = errors.New("gdal driver open err")
 	ErrGdalEmptyShp        = errors.New("gdal shp is empty")
 	ErrVoidSrid            = errors.New("gdal shp with void srid")

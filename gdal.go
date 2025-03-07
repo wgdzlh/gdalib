@@ -8,12 +8,16 @@ import (
 	"github.com/wgdzlh/gdalib/log"
 	"github.com/wgdzlh/gdalib/utils"
 
-	"github.com/lukeroth/gdal"
+	gdal "github.com/airbusgeo/godal"
 	"go.uber.org/zap"
 )
 
+type Geometry = gdal.Geometry
+type SpatialRef = gdal.SpatialRef
+type Dataset = gdal.Dataset
+
 type GdalToolbox struct {
-	refMap map[int]gdal.SpatialReference
+	refMap map[int]*SpatialRef
 	rLock  sync.Mutex
 	tmpDir string
 	logTag string
@@ -21,17 +25,17 @@ type GdalToolbox struct {
 
 // 由GDAL库C语言创建的内存对象，需要手动调用Destroy回收
 type destroyable interface {
-	Destroy()
+	Close()
 }
 
 var (
-	emptyGeometry = gdal.Geometry{}
+	emptyGeometry = Geometry{}
 )
 
 // 初始化GDAL工具箱，tmpDir为可选的临时目录路径（未提供的话为当前目录）
 func NewGdalToolbox(tmpDir ...string) *GdalToolbox {
 	g := &GdalToolbox{
-		refMap: map[int]gdal.SpatialReference{},
+		refMap: map[int]*SpatialRef{},
 		logTag: "GdalToolbox:",
 	}
 	if len(tmpDir) > 0 && tmpDir[0] != "" {
@@ -41,22 +45,23 @@ func NewGdalToolbox(tmpDir ...string) *GdalToolbox {
 }
 
 // 获取srid对应的坐标系（可复用，故无需回收）
-func (g *GdalToolbox) getSridRef(srid int) (ref gdal.SpatialReference, err error) {
+func (g *GdalToolbox) getSridRef(srid int) (ref *SpatialRef, err error) {
 	g.rLock.Lock()
 	defer g.rLock.Unlock()
 	ref, ok := g.refMap[srid]
 	if ok {
 		return
 	}
-	ref = gdal.CreateSpatialReference("")
-	if err = ref.FromEPSG(srid); err != nil { // 设定坐标系ID
-		log.Error(g.logTag+"set ref srid failed", zap.Int("srid", srid), zap.Error(err))
-		ref.Destroy()
+
+	if ref, err = gdal.NewSpatialRefFromEPSG(srid); err != nil { // 设定坐标系ID
+		log.Error(g.logTag+"get new ref with srid failed", zap.Int("srid", srid), zap.Error(err))
+		ref.Close()
 		return
 	}
 	// 这里应设置坐标系对应的数据轴次序为固定的(经度,纬度)（传统GIS坐标序），而不是新标准中与CRS相关的次序。否则在转换坐标系或者转GeoJSON时，可能出现次序倒置问题
 	// 目前我们处理的空间坐标数据都为固定的(经度,纬度)次序
-	ref.SetAxisMappingStrategy(gdal.OAMS_TraditionalGisOrder)
+	// ref.SetAxisMappingStrategy(gdal.OAMS_TraditionalGisOrder)
+
 	// OAMS_TRADITIONAL_GIS_ORDER means that for geographic CRS with lat/long order, the data will still be long/lat ordered. Similarly for a projected CRS with northing/easting order, the data will still be easting/northing ordered.
 	// OAMS_AUTHORITY_COMPLIANT means that the data axis will be identical to the CRS axis. This is the default value when instantiating OGRSpatialReference.
 	// OAMS_CUSTOM means that the data axes are customly defined with SetDataAxisToSRSAxisMapping().
@@ -64,9 +69,9 @@ func (g *GdalToolbox) getSridRef(srid int) (ref gdal.SpatialReference, err error
 	return
 }
 
-func (g *GdalToolbox) getSrid(sp gdal.SpatialReference) (srid int, err error) {
+func (g *GdalToolbox) getSrid(sp *SpatialRef) (srid int, err error) {
 	// sp.AutoIdentifyEPSG() // 可能对不规范的shp文件需要
-	wkt, _ := sp.ToWKT()
+	wkt, _ := sp.WKT()
 	log.Info(g.logTag+"spatial ref attrs", zap.String("attr", wkt))
 	rawId, ok := sp.AttrValue("AUTHORITY", 1)
 	if !ok {
@@ -84,27 +89,29 @@ func (g *GdalToolbox) getSrid(sp gdal.SpatialReference) (srid int, err error) {
 
 // 获取shp的srid
 func (g *GdalToolbox) GetSridOfShapefile(shp string) (srid int, err error) {
-	driver := gdal.OGRDriverByName(SHP_DRIVER_NAME)
-	ds, ok := driver.Open(shp, 0)
-	if !ok {
-		err = ErrGdalDriverOpen
+	ds, err := gdal.Open(shp, gdal.Drivers(SHP_DRIVER_NAME))
+	if err != nil {
 		return
 	}
-	defer ds.Destroy()
-	layer := ds.LayerByIndex(0)
-	return g.getSrid(layer.SpatialReference())
+	defer ds.Close()
+	layers := ds.Layers()
+	if len(layers) == 0 {
+		err = ErrGdalEmptyShp
+		return
+	}
+	return g.getSrid(layers[0].SpatialRef())
 }
 
-func (g *GdalToolbox) parseWKB(wkb GdalGeo, ref gdal.SpatialReference) (ret gdal.Geometry, err error) {
-	ret, err = gdal.CreateFromWKB(wkb, ref, len(wkb))
+func (g *GdalToolbox) parseWKB(wkb GdalGeo, ref *SpatialRef) (ret *Geometry, err error) {
+	ret, err = gdal.NewGeometryFromWKB(wkb, ref)
 	if err != nil {
 		log.Error(g.logTag+"parse wkb failed", zap.Error(err))
 	}
 	return
 }
 
-func (g *GdalToolbox) parseWKT(wkt string, ref gdal.SpatialReference) (ret gdal.Geometry, err error) {
-	ret, err = gdal.CreateFromWKT(wkt, ref)
+func (g *GdalToolbox) parseWKT(wkt string, ref *SpatialRef) (ret *Geometry, err error) {
+	ret, err = gdal.NewGeometryFromWKT(wkt, ref)
 	if err != nil {
 		log.Error(g.logTag+"parse wkt failed", zap.Error(err))
 		err = ErrInvalidWKT
@@ -130,12 +137,16 @@ func (g *GdalToolbox) TransformWkb(wkb GdalGeo, srid, tSrid int) (ret GdalGeo, e
 	if err != nil {
 		return
 	}
-	defer geo.Destroy()
-	if err = geo.TransformTo(tRef); err != nil {
+	defer geo.Close()
+	trans, err := gdal.NewTransform(ref, tRef)
+	if err != nil {
+		return
+	}
+	if err = geo.Transform(trans); err != nil {
 		log.Error(g.logTag+"geo transform failed", zap.Error(err))
 		return
 	}
-	ret, err = geo.ToWKB()
+	ret, err = geo.WKB()
 	return
 }
 
@@ -157,12 +168,16 @@ func (g *GdalToolbox) TransformWkt(wkt string, srid, tSrid int) (ret string, err
 	if err != nil {
 		return
 	}
-	defer geo.Destroy()
-	if err = geo.TransformTo(tRef); err != nil {
+	defer geo.Close()
+	trans, err := gdal.NewTransform(ref, tRef)
+	if err != nil {
+		return
+	}
+	if err = geo.Transform(trans); err != nil {
 		log.Error(g.logTag+"geo transform failed", zap.Error(err))
 		return
 	}
-	ret, err = geo.ToWKT()
+	ret, err = geo.WKT()
 	return
 }
 
@@ -176,7 +191,7 @@ func (g *GdalToolbox) CheckWkt(wkt string, srid int) (err error) {
 	if err != nil {
 		return
 	}
-	geo.Destroy()
+	geo.Close()
 	return
 }
 
@@ -190,8 +205,8 @@ func (g *GdalToolbox) WktToWkb(wkt string, srid int) (wkb GdalGeo, err error) {
 	if err != nil {
 		return
 	}
-	wkb, err = geo.ToWKB()
-	geo.Destroy()
+	wkb, err = geo.WKB()
+	geo.Close()
 	return
 }
 
@@ -205,20 +220,21 @@ func (g *GdalToolbox) WkbToWkt(wkb GdalGeo, srid int) (wkt string, err error) {
 	if err != nil {
 		return
 	}
-	wkt, err = geo.ToWKT()
-	geo.Destroy()
+	wkt, err = geo.WKT()
+	geo.Close()
 	return
 }
 
 // GeoJSON转WKB
 func (g *GdalToolbox) GeoJSONToWkb(geoJson AnyJson) (ret GdalGeo, err error) {
-	geo := gdal.CreateFromJson(utils.B2S(geoJson))
-	defer geo.Destroy()
-	if geo.WKBSize() == 0 {
-		err = ErrGdalWrongGeoJSON
+	geo, err := gdal.NewGeometryFromGeoJSON(utils.B2S(geoJson))
+	if err != nil {
 		return
 	}
-	ret, err = geo.ToWKB()
+	if ret, err = geo.WKB(); err == nil && len(ret) == 0 {
+		err = ErrGdalWrongGeoJSON
+	}
+	geo.Close()
 	return
 }
 
@@ -232,9 +248,25 @@ func (g *GdalToolbox) WkbToGeoJSON(wkb GdalGeo, srid int) (ret AnyJson, err erro
 	if err != nil {
 		return
 	}
-	ret = utils.S2B(geo.ToJSON())
-	geo.Destroy()
+	ret, err = g.geoToGeoJSON(geo)
+	geo.Close()
 	return
+}
+
+func (g *GdalToolbox) geoToGeoJSON(geo *Geometry) (ret AnyJson, err error) {
+	js, err := geo.GeoJSON()
+	if err == nil {
+		ret = utils.S2B(js)
+	}
+	return
+}
+
+func (g *GdalToolbox) GetEmptyPolygon(ref *SpatialRef) (*gdal.Geometry, error) {
+	return gdal.NewGeometryFromWKT("POLYGON EMPTY", ref)
+}
+
+func (g *GdalToolbox) GetEmptyMultiPolygon(ref *SpatialRef) (*gdal.Geometry, error) {
+	return gdal.NewGeometryFromWKT("MULTIPOLYGON EMPTY", ref)
 }
 
 // 合并多个WKB矢量面
@@ -243,25 +275,28 @@ func (g *GdalToolbox) Union(gs []GdalGeo, srid int) (ret GdalGeo, err error) {
 	if err != nil {
 		return
 	}
-	var (
-		geo      gdal.Geometry
-		unionGeo = gdal.Create(gdal.GT_Polygon)
-		gc       = []destroyable{unionGeo}
-	)
+	unionGeo, err := g.GetEmptyPolygon(ref)
+	if err != nil {
+		return
+	}
+	gc := []destroyable{unionGeo}
 	defer func() {
 		for _, v := range gc {
-			v.Destroy()
+			v.Close()
 		}
 	}()
+	var geo *Geometry
 	for _, a := range gs {
 		if geo, err = g.parseWKB(a, ref); err != nil {
 			return
 		}
 		gc = append(gc, geo)
-		unionGeo = unionGeo.Union(geo)
+		if unionGeo, err = unionGeo.Union(geo); err != nil {
+			return
+		}
 		gc = append(gc, unionGeo)
 	}
-	ret, err = unionGeo.ToWKB()
+	ret, err = unionGeo.WKB()
 	return
 }
 
@@ -271,25 +306,29 @@ func (g *GdalToolbox) Intersection(gs []GdalGeo, srid int) (ret GdalGeo, err err
 	if err != nil {
 		return
 	}
-	var (
-		geo      gdal.Geometry
-		interGeo = gdal.Create(gdal.GT_Polygon)
-		gc       = []destroyable{interGeo}
-	)
+	var ()
+	interGeo, err := g.GetEmptyPolygon(ref)
+	if err != nil {
+		return
+	}
+	gc := []destroyable{interGeo}
 	defer func() {
 		for _, v := range gc {
-			v.Destroy()
+			v.Close()
 		}
 	}()
+	var geo *Geometry
 	for _, a := range gs {
 		if geo, err = g.parseWKB(a, ref); err != nil {
 			return
 		}
 		gc = append(gc, geo)
-		interGeo = interGeo.Intersection(geo)
+		if interGeo, err = interGeo.Intersection(geo); err != nil {
+			return
+		}
 		gc = append(gc, interGeo)
 	}
-	ret, err = interGeo.ToWKB()
+	ret, err = interGeo.WKB()
 	return
 }
 
@@ -303,15 +342,18 @@ func (g *GdalToolbox) Difference(gA, gB GdalGeo, srid int) (ret GdalGeo, err err
 	if err != nil {
 		return
 	}
-	defer geoA.Destroy()
+	defer geoA.Close()
 	geoB, err := g.parseWKB(gB, ref)
 	if err != nil {
 		return
 	}
-	defer geoB.Destroy()
-	diffGeo := geoA.Difference(geoB)
-	ret, err = diffGeo.ToWKB()
-	diffGeo.Destroy()
+	defer geoB.Close()
+	diffGeo, err := geoA.Difference(geoB)
+	if err != nil {
+		return
+	}
+	ret, err = diffGeo.WKB()
+	diffGeo.Close()
 	return
 }
 
@@ -326,13 +368,13 @@ func (g *GdalToolbox) SubtractZones(uc *Uncertainty, subs []Uncertainty, srid in
 		return
 	}
 	var (
-		geo gdal.Geometry
+		geo *Geometry
 		e   error
 		gc  = []destroyable{ucGeo}
 	)
 	defer func() {
 		for _, v := range gc {
-			v.Destroy()
+			v.Close()
 		}
 	}()
 	for _, vec := range subs {
@@ -340,10 +382,12 @@ func (g *GdalToolbox) SubtractZones(uc *Uncertainty, subs []Uncertainty, srid in
 			continue
 		}
 		gc = append(gc, geo)
-		ucGeo = ucGeo.Difference(geo)
+		if ucGeo, err = ucGeo.Difference(geo); err != nil {
+			return
+		}
 		gc = append(gc, ucGeo)
 	}
-	uc.Geom, err = ucGeo.ToWKB()
+	uc.Geom, err = ucGeo.WKB()
 	return
 }
 
@@ -357,11 +401,14 @@ func (g *GdalToolbox) GetWktSpan(wkt string, srid int) (span [4]float64, err err
 	if err != nil {
 		return
 	}
-	defer geo.Destroy()
-	envelop := geo.Envelope()
-	span[0] = envelop.MinX()
-	span[1] = envelop.MaxX()
-	span[2] = envelop.MinY()
-	span[3] = envelop.MaxY()
+	defer geo.Close()
+	envelop, err := geo.Bounds()
+	if err != nil {
+		return
+	}
+	span[0] = envelop[0]
+	span[1] = envelop[2]
+	span[2] = envelop[1]
+	span[3] = envelop[3]
 	return
 }
