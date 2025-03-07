@@ -18,8 +18,7 @@ const (
 )
 
 // 读取一般Tif
-func (g *GdalToolbox) ParseRaster(tif string, buf [][]byte) (err error) {
-	bands := len(buf) // 需要读取的波段数
+func (g *GdalToolbox) ParseRaster(tif string, bands int) (buf [][]byte, x, y int, err error) {
 	sds, err := gdal.Open(tif, gdal.ReadOnly)
 	if err != nil {
 		log.Error(g.logTag+"open tif failed", zap.Error(err))
@@ -34,18 +33,20 @@ func (g *GdalToolbox) ParseRaster(tif string, buf [][]byte) (err error) {
 		return
 	}
 	log.Info(g.logTag+"start read tif", zap.Int("bands", bc), zap.Int("bufBn", bands))
+	buf = make([][]byte, bands)
 	for i := 1; i <= bands; i++ {
 		band := sds.RasterBand(i)
 		dt := band.RasterDataType()
-		x := band.XSize()
-		y := band.YSize()
+		x = band.XSize()
+		y = band.YSize()
 		if dt != gdal.Byte {
 			log.Error(g.logTag+"tif is malformed", zap.String("dataType", dt.Name()))
 			err = ErrWrongTif
 			return
 		}
 		log.Info(g.logTag+"read tif band", zap.Int("band", i), zap.Int("dt", int(dt)), zap.Int("width", x), zap.Int("height", y))
-		err = band.IO(gdal.Read, 0, 0, x, y, buf[i], x, y, 0, 0)
+		buf[i-1] = make([]byte, x*y*dt.Size())
+		err = band.IO(gdal.Read, 0, 0, x, y, buf[i-1], x, y, 0, 0)
 		if err != nil {
 			log.Error(g.logTag+"read tif band failed", zap.Int("band", i), zap.Error(err))
 			err = ErrTifReadFailed
